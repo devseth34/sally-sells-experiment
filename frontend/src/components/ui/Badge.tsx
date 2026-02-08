@@ -1,29 +1,30 @@
 import { cn } from "../../lib/utils";
-import { PHASES } from "../../constants";
-import type { NEPQPhase } from "../../types";
+import type { HTMLAttributes, ReactNode } from "react";
 
-interface BadgeProps {
-  phase: NEPQPhase;
-  size?: "sm" | "md";
+interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
+  children: ReactNode;
+  variant?: "default" | "success" | "warning" | "danger";
 }
 
-export function Badge({ phase, size = "md" }: BadgeProps) {
-  const config = PHASES[phase];
-  
+export function Badge({
+  className,
+  children,
+  variant = "default",
+  ...props
+}: BadgeProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center font-medium rounded border",
-        config.bgColor,
-        config.color,
-        config.borderColor,
-        {
-          "text-[10px] px-1.5 py-0.5": size === "sm",
-          "text-xs px-2 py-1": size === "md",
-        }
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+        variant === "default" && "bg-zinc-800 text-zinc-300",
+        variant === "success" && "bg-emerald-900/50 text-emerald-400",
+        variant === "warning" && "bg-amber-900/50 text-amber-400",
+        variant === "danger" && "bg-red-900/50 text-red-400",
+        className
       )}
+      {...props}
     >
-      {config.label}
+      {children}
     </span>
   );
 }

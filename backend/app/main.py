@@ -1,29 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict
+from sqlalchemy.orm import Session as DBSessionType
+from sqlalchemy import func
 import uuid
+import time
 
+from .database import get_db, DBSession, DBMessage, init_db
 from .schemas import (
-    Session,
     NepqPhase,
-    SessionStatus,
     CreateSessionRequest,
     CreateSessionResponse,
     SendMessageRequest,
     SendMessageResponse,
-    SessionResponse,
-    ChatMessage,
+    MessageResponse,
+    SessionDetailResponse,
+    SessionListItem,
+    MetricsResponse,
 )
 from .agent import SallyEngine
 
+app = FastAPI(title="Sally Sells API", version="1.0.0")
 
-app = FastAPI(
-    title="Sally Sells API",
-    description="NEPQ Sales Agent Backend",
-    version="1.0.0"
-)
-
-# CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -32,9 +29,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session storage (replace with database later)
-sessions: Dict[str, Session] = {}
-engines: Dict[str, SallyEngine] = {}
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 
 @app.get("/")
@@ -43,131 +41,169 @@ def root():
 
 
 @app.post("/api/sessions", response_model=CreateSessionResponse)
-def create_session(request: CreateSessionRequest = None):
-    """Create a new chat session"""
+def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(get_db)):
     session_id = str(uuid.uuid4())[:8].upper()
-    
-    session = Session(
+    now = time.time()
+
+    db_session = DBSession(
         id=session_id,
-        pre_conviction=request.pre_conviction if request else None
+        status="active",
+        current_phase=NepqPhase.CONNECTION.value,
+        pre_conviction=request.pre_conviction,
+        start_time=now,
+        message_count=1,
+        messages_in_current_phase=0,
     )
-    
-    engine = SallyEngine(session)
-    greeting = engine.get_greeting()
-    
-    # Add greeting as first message
-    greeting_msg = ChatMessage(
+    db.add(db_session)
+
+    greeting_text = SallyEngine.get_greeting()
+    greeting_id = str(uuid.uuid4())
+    greeting_msg = DBMessage(
+        id=greeting_id,
+        session_id=session_id,
         role="assistant",
-        content=greeting,
-        phase=session.current_phase
+        content=greeting_text,
+        timestamp=now,
+        phase=NepqPhase.CONNECTION.value,
     )
-    session.messages.append(greeting_msg)
-    
-    # Store session and engine
-    sessions[session_id] = session
-    engines[session_id] = engine
-    
+    db.add(greeting_msg)
+    db.commit()
+
     return CreateSessionResponse(
         session_id=session_id,
-        current_phase=session.current_phase,
-        greeting=greeting
+        current_phase=NepqPhase.CONNECTION.value,
+        pre_conviction=request.pre_conviction,
+        greeting=MessageResponse(
+            id=greeting_id, role="assistant", content=greeting_text,
+            timestamp=now, phase=NepqPhase.CONNECTION.value,
+        ),
     )
 
 
 @app.post("/api/sessions/{session_id}/messages", response_model=SendMessageResponse)
-def send_message(session_id: str, request: SendMessageRequest):
-    """Send a message in a session"""
-    if session_id not in sessions:
+def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType = Depends(get_db)):
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    engine = engines[session_id]
-    
-    if session.status != SessionStatus.ACTIVE:
-        raise HTTPException(status_code=400, detail="Session is not active")
-    
-    # Process the message
-    response_text, phase_changed, session_ended = engine.process_message(request.content)
-    
-    # Get the assistant's message (last one added)
-    assistant_message = session.messages[-1]
-    
+    if db_session.status != "active":
+        raise HTTPException(status_code=400, detail="Session is no longer active")
+
+    now = time.time()
+    current_phase = NepqPhase(db_session.current_phase)
+    previous_phase = current_phase
+
+    user_msg_id = str(uuid.uuid4())
+    user_msg = DBMessage(
+        id=user_msg_id, session_id=session_id, role="user",
+        content=request.content, timestamp=now, phase=current_phase.value,
+    )
+    db.add(user_msg)
+
+    db_session.messages_in_current_phase += 1
+    db_session.message_count += 1
+
+    phase_changed = False
+    if SallyEngine.should_transition(current_phase, db_session.messages_in_current_phase):
+        next_phase = SallyEngine.get_next_phase(current_phase)
+        if next_phase != current_phase:
+            db_session.current_phase = next_phase.value
+            db_session.messages_in_current_phase = 0
+            current_phase = next_phase
+            phase_changed = True
+
+    session_ended = current_phase == NepqPhase.TERMINATED
+    if session_ended:
+        db_session.status = "completed"
+        db_session.end_time = now
+
+    response_text = SallyEngine.generate_response(current_phase, request.content)
+    assistant_msg_id = str(uuid.uuid4())
+    assistant_msg = DBMessage(
+        id=assistant_msg_id, session_id=session_id, role="assistant",
+        content=response_text, timestamp=time.time(), phase=current_phase.value,
+    )
+    db.add(assistant_msg)
+    db_session.message_count += 1
+    db.commit()
+
     return SendMessageResponse(
-        message=assistant_message,
-        current_phase=session.current_phase,
+        user_message=MessageResponse(
+            id=user_msg_id, role="user", content=request.content,
+            timestamp=now, phase=previous_phase.value,
+        ),
+        assistant_message=MessageResponse(
+            id=assistant_msg_id, role="assistant", content=response_text,
+            timestamp=assistant_msg.timestamp, phase=current_phase.value,
+        ),
+        current_phase=current_phase.value,
+        previous_phase=previous_phase.value,
         phase_changed=phase_changed,
-        session_ended=session_ended
+        session_ended=session_ended,
     )
 
 
-@app.get("/api/sessions/{session_id}", response_model=SessionResponse)
-def get_session(session_id: str):
-    """Get session details"""
-    if session_id not in sessions:
+@app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
+def get_session(session_id: str, db: DBSessionType = Depends(get_db)):
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    return SessionResponse(
-        id=session.id,
-        status=session.status,
-        current_phase=session.current_phase,
-        messages=session.messages,
-        start_time=session.start_time,
-        end_time=session.end_time
+    messages = db.query(DBMessage).filter(DBMessage.session_id == session_id).order_by(DBMessage.timestamp).all()
+    return SessionDetailResponse(
+        id=db_session.id, status=db_session.status, current_phase=db_session.current_phase,
+        pre_conviction=db_session.pre_conviction, post_conviction=db_session.post_conviction,
+        start_time=db_session.start_time, end_time=db_session.end_time,
+        messages=[MessageResponse(id=m.id, role=m.role, content=m.content, timestamp=m.timestamp, phase=m.phase) for m in messages],
     )
 
 
-@app.get("/api/sessions")
-def list_sessions():
-    """List all sessions"""
-    return {
-        "sessions": [
-            {
-                "id": s.id,
-                "status": s.status,
-                "current_phase": s.current_phase,
-                "message_count": len(s.messages),
-                "start_time": s.start_time,
-            }
-            for s in sessions.values()
-        ]
-    }
+@app.get("/api/sessions", response_model=list[SessionListItem])
+def list_sessions(db: DBSessionType = Depends(get_db)):
+    sessions = db.query(DBSession).order_by(DBSession.start_time.desc()).all()
+    return [
+        SessionListItem(
+            id=s.id, status=s.status, current_phase=s.current_phase,
+            pre_conviction=s.pre_conviction, message_count=s.message_count,
+            start_time=s.start_time, end_time=s.end_time,
+        )
+        for s in sessions
+    ]
 
 
-@app.delete("/api/sessions/{session_id}")
-def end_session(session_id: str):
-    """End a session"""
-    if session_id not in sessions:
+@app.get("/api/metrics", response_model=MetricsResponse)
+def get_metrics(db: DBSessionType = Depends(get_db)):
+    total = db.query(DBSession).count()
+    active = db.query(DBSession).filter(DBSession.status == "active").count()
+    completed = db.query(DBSession).filter(DBSession.status == "completed").count()
+    abandoned = db.query(DBSession).filter(DBSession.status == "abandoned").count()
+    avg_conviction = db.query(func.avg(DBSession.pre_conviction)).scalar()
+    conversion_rate = (completed / total * 100) if total > 0 else 0.0
+
+    phase_dist = {}
+    for phase in NepqPhase:
+        count = db.query(DBSession).filter(DBSession.current_phase == phase.value).count()
+        if count > 0:
+            phase_dist[phase.value] = count
+
+    failure_modes = []
+    for phase in NepqPhase:
+        count = db.query(DBSession).filter(DBSession.status == "abandoned", DBSession.current_phase == phase.value).count()
+        if count > 0:
+            failure_modes.append({"phase": phase.value, "count": count})
+
+    return MetricsResponse(
+        total_sessions=total, active_sessions=active, completed_sessions=completed,
+        abandoned_sessions=abandoned, average_pre_conviction=round(avg_conviction, 1) if avg_conviction else None,
+        conversion_rate=round(conversion_rate, 1), phase_distribution=phase_dist, failure_modes=failure_modes,
+    )
+
+
+@app.post("/api/sessions/{session_id}/end")
+def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session = sessions[session_id]
-    session.status = SessionStatus.ABANDONED
-    
-    return {"status": "ended", "session_id": session_id}
-
-
-# Dashboard metrics endpoint
-@app.get("/api/metrics")
-def get_metrics():
-    """Get dashboard metrics"""
-    all_sessions = list(sessions.values())
-    completed = [s for s in all_sessions if s.status == SessionStatus.COMPLETED]
-    active = [s for s in all_sessions if s.status == SessionStatus.ACTIVE]
-    
-    # Calculate failure modes (sessions that didn't reach COMMITMENT)
-    failure_modes = {}
-    for s in all_sessions:
-        if s.status != SessionStatus.COMPLETED or s.current_phase != NepqPhase.TERMINATED:
-            phase = s.current_phase.value
-            failure_modes[phase] = failure_modes.get(phase, 0) + 1
-    
-    return {
-        "total_sessions": len(all_sessions),
-        "active_sessions": len(active),
-        "completed_sessions": len(completed),
-        "conversion_rate": len(completed) / len(all_sessions) * 100 if all_sessions else 0,
-        "failure_modes": [
-            {"phase": phase, "count": count}
-            for phase, count in failure_modes.items()
-        ]
-    }
+    if db_session.status == "active":
+        db_session.status = "abandoned"
+        db_session.end_time = time.time()
+        db.commit()
+    return {"status": "ok"}

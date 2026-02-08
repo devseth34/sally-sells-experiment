@@ -1,121 +1,169 @@
-import { useState, useRef, useEffect } from "react";
-import { Header } from "../components/layout/Header";
-import { PhaseIndicator } from "../components/chat/PhaseIndicator";
-import { MessageBubble } from "../components/chat/MessageBubble";
-import { ChatInput } from "../components/chat/ChatInput";
-import { Card } from "../components/ui/Card";
-import { formatTime, generateId } from "../lib/utils";
-import { PHASE_ORDER } from "../constants";
-import type { Message, NEPQPhase } from "../types";
-import { Clock, AlertCircle } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Header } from "../components/layout/Header.tsx";
+import { PhaseIndicator } from "../components/chat/PhaseIndicator.tsx";
+import { MessageBubble } from "../components/chat/MessageBubble.tsx";
+import { ChatInput } from "../components/chat/ChatInput.tsx";
+import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
+import { createSession, sendMessage } from "../lib/api";
+import { formatTime } from "../lib/utils";
+import type { MessageResponse } from "../lib/api";
 
 export function ChatPage() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [currentPhase, setCurrentPhase] = useState<NEPQPhase>("CONNECTION");
-  const [elapsed, setElapsed] = useState(0);
-  const [isTyping, setIsTyping] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentPhase, setCurrentPhase] = useState("CONNECTION");
+  const [messages, setMessages] = useState<MessageResponse[]>([]);
+  const [showModal, setShowModal] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const [preConviction, setPreConviction] = useState<number | null>(null);
+
+  const [seconds, setSeconds] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Timer
-  useEffect(() => {
-    const timer = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = (content: string) => {
-    const userMsg: Message = {
-      id: generateId(),
-      role: "user",
-      content,
-      timestamp: new Date(),
-      phase: currentPhase,
+  useEffect(() => {
+    if (sessionId && !sessionEnded) {
+      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-    setMessages((prev) => [...prev, userMsg]);
-    setIsTyping(true);
+  }, [sessionId, sessionEnded]);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const currentIndex = PHASE_ORDER.indexOf(currentPhase);
-      const nextPhase = currentIndex < PHASE_ORDER.length - 1 
-        ? PHASE_ORDER[currentIndex + 1] 
-        : "TERMINATED" as NEPQPhase;
-      
-      setCurrentPhase(nextPhase);
-      
-      const aiMsg: Message = {
-        id: generateId(),
-        role: "assistant",
-        content: `[Simulated ${nextPhase} response] Based on what you've shared about "${content.slice(0, 50)}..."`,
-        timestamp: new Date(),
-        phase: nextPhase,
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-      setIsTyping(false);
-    }, 1500);
+  const handleStartSession = async (score: number) => {
+    try {
+      setIsLoading(true);
+      const res = await createSession(score);
+      setSessionId(res.session_id);
+      setCurrentPhase(res.current_phase);
+      setPreConviction(res.pre_conviction);
+      setMessages([res.greeting]);
+      setShowModal(false);
+      setSeconds(0);
+    } catch (err) {
+      console.error("Failed to create session:", err);
+      alert("Failed to connect to backend. Is the server running on port 8000?");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const isNearTimeLimit = elapsed > 540; // 9 minutes
+  const handleSendMessage = async (content: string) => {
+    if (!sessionId || isLoading) return;
+    try {
+      setIsLoading(true);
+      const res = await sendMessage(sessionId, content);
+      setMessages((prev) => [...prev, res.user_message, res.assistant_message]);
+      setCurrentPhase(res.current_phase);
+      if (res.session_ended) {
+        setSessionEnded(true);
+      }
+    } catch (err) {
+      console.error("Failed to send message:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleNewSession = () => {
+    setSessionId(null);
+    setMessages([]);
+    setCurrentPhase("CONNECTION");
+    setSessionEnded(false);
+    setPreConviction(null);
+    setSeconds(0);
+    if (timerRef.current) clearInterval(timerRef.current);
+    setShowModal(true);
+  };
 
   return (
-    <div className="h-screen flex flex-col bg-zinc-950">
+    <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
-      
-      {/* Phase Bar */}
-      <div className="px-6 py-3 border-b border-zinc-800 bg-zinc-900/50 flex items-center justify-between">
-        <PhaseIndicator currentPhase={currentPhase} />
-        <div className="flex items-center gap-4">
-          {isNearTimeLimit && (
-            <div className="flex items-center gap-1.5 text-amber-400 text-xs">
-              <AlertCircle className="w-3.5 h-3.5" />
-              <span>Approaching time limit</span>
-            </div>
-          )}
-          <div className="flex items-center gap-1.5 text-zinc-400 text-xs font-mono">
-            <Clock className="w-3.5 h-3.5" />
-            {formatTime(elapsed)}
+
+      {showModal && <ConvictionModal onStart={handleStartSession} />}
+
+      {!sessionId && !showModal && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <h2 className="text-lg font-semibold mb-2">Sally Sells</h2>
+            <p className="text-sm text-zinc-500 mb-6">
+              NEPQ-powered sales agent for 100x Discovery Workshop
+            </p>
+            <button
+              onClick={() => setShowModal(true)}
+              className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
+            >
+              Start Conversation
+            </button>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-3xl mx-auto space-y-4">
-          {messages.length === 0 && (
-            <Card className="p-8 text-center">
-              <p className="text-zinc-400 text-sm">
-                Start the conversation. Sally will guide prospects through the NEPQ methodology.
-              </p>
-            </Card>
-          )}
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
-          ))}
-          {isTyping && (
-            <div className="flex justify-start">
-              <div className="bg-zinc-800 rounded-lg px-4 py-3 border border-zinc-700">
-                <div className="flex gap-1">
-                  <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce" />
-                  <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce [animation-delay:0.1s]" />
-                  <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce [animation-delay:0.2s]" />
+      {sessionId && (
+        <>
+          <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/80 overflow-x-auto">
+            <PhaseIndicator currentPhase={currentPhase} />
+            <div className="flex items-center gap-3 shrink-0 ml-4">
+              {preConviction && (
+                <span className="text-[10px] text-zinc-500">
+                  Pre-score: {preConviction}/10
+                </span>
+              )}
+              <span
+                className={`text-xs font-mono ${
+                  seconds > 540
+                    ? "text-red-400"
+                    : seconds > 480
+                    ? "text-amber-400"
+                    : "text-zinc-500"
+                }`}
+              >
+                {formatTime(seconds)}
+              </span>
+              {seconds > 540 && (
+                <span className="text-[10px] text-red-400">Time limit</span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {messages.map((msg) => (
+              <MessageBubble key={msg.id} message={msg} />
+            ))}
+            {isLoading && (
+              <div className="flex justify-start mb-3">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-500">
+                  Sally is typing...
                 </div>
               </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <ChatInput
+            onSend={handleSendMessage}
+            disabled={isLoading || sessionEnded}
+          />
+
+          {sessionEnded && (
+            <div className="px-4 py-3 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between">
+              <span className="text-xs text-zinc-400">
+                Session completed — {currentPhase}
+              </span>
+              <button
+                onClick={handleNewSession}
+                className="h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+              >
+                New Session
+              </button>
             </div>
           )}
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      {/* Input */}
-      <div className="p-4 border-t border-zinc-800 bg-zinc-900">
-        <div className="max-w-3xl mx-auto">
-          <ChatInput onSend={handleSend} disabled={currentPhase === "TERMINATED"} />
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }

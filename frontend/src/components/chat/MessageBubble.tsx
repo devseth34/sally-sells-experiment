@@ -1,36 +1,40 @@
-import { cn } from "../../lib/utils";
-import { Badge } from "../ui/Badge";
-import type { Message } from "../../types";
-import { format } from "date-fns";
+
+import { getPhaseLabel, getPhaseColor } from "../../constants";
+import { formatTimestamp } from "../../lib/utils";
+import type { MessageResponse } from "../../lib/api";
 
 interface MessageBubbleProps {
-  message: Message;
+  message: MessageResponse;
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
+  const phaseColor = getPhaseColor(message.phase);
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[70%] rounded-lg px-4 py-2.5",
-          isUser
-            ? "bg-white text-zinc-900"
-            : "bg-zinc-800 text-zinc-100 border border-zinc-700"
-        )}
-      >
-        <p className="text-sm leading-relaxed">{message.content}</p>
-        <div className={cn(
-          "flex items-center gap-2 mt-2 pt-2 border-t",
-          isUser ? "border-zinc-200" : "border-zinc-700"
-        )}>
-          <Badge phase={message.phase} size="sm" />
-          <span className={cn(
-            "text-[10px]",
-            isUser ? "text-zinc-500" : "text-zinc-500"
-          )}>
-            {format(message.timestamp, "HH:mm")}
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
+      <div className={`max-w-[75%] ${isUser ? "items-end" : "items-start"} flex flex-col gap-1`}>
+        <div
+          className={`px-3 py-2 rounded-lg text-sm leading-relaxed ${
+            isUser
+              ? "bg-zinc-700 text-white rounded-br-sm"
+              : "bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-bl-sm"
+          }`}
+        >
+          {message.content}
+        </div>
+        <div className="flex items-center gap-2 px-1">
+          <span className="text-[10px] text-zinc-600">
+            {formatTimestamp(message.timestamp)}
+          </span>
+          <span
+            className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider"
+            style={{
+              background: `${phaseColor}15`,
+              color: phaseColor,
+            }}
+          >
+            {getPhaseLabel(message.phase)}
           </span>
         </div>
       </div>

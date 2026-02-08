@@ -1,112 +1,149 @@
-import { Header } from "../components/layout/Header";
-import { Card, CardHeader, CardContent } from "../components/ui/Card";
-import { Badge } from "../components/ui/Badge";
-import { Button } from "../components/ui/Button";
-import type { Session } from "../types";
-import { format } from "date-fns";
-import { Eye, Clock, MessageSquare } from "lucide-react";
-
-const MOCK_SESSIONS: Session[] = [
-  {
-    id: "SES-001",
-    startTime: new Date(Date.now() - 3600000),
-    endTime: new Date(),
-    status: "completed",
-    currentPhase: "COMMITMENT",
-    messages: Array(12).fill(null),
-    convictionDelta: 3.2,
-  },
-  {
-    id: "SES-002",
-    startTime: new Date(Date.now() - 86400000),
-    status: "abandoned",
-    currentPhase: "CONSEQUENCE",
-    messages: Array(8).fill(null),
-    convictionDelta: 1.1,
-  },
-  {
-    id: "SES-003",
-    startTime: new Date(Date.now() - 172800000),
-    endTime: new Date(Date.now() - 172000000),
-    status: "completed",
-    currentPhase: "COMMITMENT",
-    messages: Array(15).fill(null),
-    convictionDelta: 4.5,
-  },
-];
-
-const STATUS_STYLES = {
-  active: "bg-emerald-500/10 text-emerald-400 border-emerald-500/50",
-  completed: "bg-sky-500/10 text-sky-400 border-sky-500/50",
-  abandoned: "bg-zinc-500/10 text-zinc-400 border-zinc-500/50",
-};
+import { useState, useEffect } from "react";
+import { Header } from "../components/layout/Header.tsx";
+import { Card, CardHeader, CardContent } from "../components/ui/index";
+import { Badge } from "../components/ui/index";
+import { Button } from "../components/ui/index";
+import { listSessions, getSession } from "../lib/api";
+import { getPhaseLabel, getPhaseColor } from "../constants";
+import { formatDate, formatDuration, formatTimestamp } from "../lib/utils";
+import type { SessionListItem, SessionDetail } from "../lib/api";
 
 export function HistoryPage() {
-  return (
-    <div className="h-screen flex flex-col bg-zinc-950">
-      <Header />
-      
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-semibold text-white">Session History</h1>
-              <p className="text-sm text-zinc-400 mt-1">Audit logs of past conversations</p>
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
+  const [selectedSession, setSelectedSession] = useState<SessionDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { fetchSessions(); }, []);
+
+  const fetchSessions = async () => {
+    try {
+      const data = await listSessions();
+      setSessions(data);
+      setError(null);
+    } catch {
+      setError("Cannot connect to backend. Is the server running?");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleViewSession = async (sessionId: string) => {
+    try {
+      const detail = await getSession(sessionId);
+      setSelectedSession(detail);
+    } catch {
+      alert("Failed to load session transcript");
+    }
+  };
+
+  if (selectedSession) {
+    return (
+      <div className="h-screen flex flex-col bg-zinc-950 text-white">
+        <Header />
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-3xl mx-auto">
+            <div className="flex items-center justify-between mb-6">
+              <Button variant="ghost" size="sm" onClick={() => setSelectedSession(null)}>← Back to History</Button>
+              <div className="flex items-center gap-2">
+                <Badge variant={selectedSession.status === "completed" ? "success" : selectedSession.status === "active" ? "warning" : "danger"}>{selectedSession.status}</Badge>
+                <span className="text-xs text-zinc-500">Session {selectedSession.id}</span>
+              </div>
             </div>
-            <Button variant="secondary" size="sm">
-              Export CSV
-            </Button>
+
+            <Card className="mb-6">
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div><p className="text-zinc-500 text-xs">Pre-Conviction</p><p className="text-white font-medium">{selectedSession.pre_conviction ?? "—"}/10</p></div>
+                  <div><p className="text-zinc-500 text-xs">Final Phase</p><p className="font-medium" style={{ color: getPhaseColor(selectedSession.current_phase) }}>{getPhaseLabel(selectedSession.current_phase)}</p></div>
+                  <div><p className="text-zinc-500 text-xs">Duration</p><p className="text-white font-medium font-mono">{formatDuration(selectedSession.start_time, selectedSession.end_time)}</p></div>
+                  <div><p className="text-zinc-500 text-xs">Messages</p><p className="text-white font-medium">{selectedSession.messages.length}</p></div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><h2 className="text-sm font-medium text-zinc-300">Full Transcript</h2></CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {selectedSession.messages.map((msg) => {
+                    const phaseColor = getPhaseColor(msg.phase);
+                    return (
+                      <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${msg.role === "user" ? "bg-zinc-700 text-zinc-300" : "bg-zinc-800 text-zinc-400"}`}>
+                          {msg.role === "user" ? "U" : "S"}
+                        </div>
+                        <div className={`flex-1 ${msg.role === "user" ? "text-right" : ""}`}>
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            {msg.role === "user" && <span className="flex-1" />}
+                            <span className="text-[10px] text-zinc-600">{formatTimestamp(msg.timestamp)}</span>
+                            <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider" style={{ background: `${phaseColor}15`, color: phaseColor }}>{getPhaseLabel(msg.phase)}</span>
+                          </div>
+                          <p className={`text-sm leading-relaxed ${msg.role === "user" ? "text-zinc-300" : "text-zinc-400"}`}>{msg.content}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-zinc-950 text-white">
+      <Header />
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-lg font-semibold">Session History</h1>
+            <Button variant="secondary" size="sm" onClick={fetchSessions}>Refresh</Button>
           </div>
 
-          <Card>
-            <CardHeader>
-              <div className="grid grid-cols-6 gap-4 text-xs text-zinc-500 uppercase tracking-wider">
-                <span>Session ID</span>
-                <span>Status</span>
-                <span>Final Phase</span>
-                <span>Duration</span>
-                <span>Messages</span>
-                <span className="text-right">Actions</span>
+          {error && <div className="mb-6 p-3 rounded-lg bg-red-900/20 border border-red-900/40 text-sm text-red-400">{error}</div>}
+          {loading && <div className="text-sm text-zinc-500">Loading sessions...</div>}
+
+          {!loading && sessions.length === 0 && (
+            <Card><CardContent><p className="text-sm text-zinc-500 text-center py-8">No sessions yet. Start a conversation to see history here.</p></CardContent></Card>
+          )}
+
+          {sessions.length > 0 && (
+            <Card>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800">
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Session</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Status</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Phase</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Pre-Score</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Messages</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Duration</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">Started</th>
+                      <th className="text-right p-3 text-xs text-zinc-500 font-medium">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sessions.map((session) => (
+                      <tr key={session.id} className="border-b border-zinc-800/50 hover:bg-zinc-900/50 transition-colors">
+                        <td className="p-3 font-mono text-zinc-400">{session.id}</td>
+                        <td className="p-3"><Badge variant={session.status === "completed" ? "success" : session.status === "active" ? "warning" : "danger"}>{session.status}</Badge></td>
+                        <td className="p-3"><span className="text-xs font-medium" style={{ color: getPhaseColor(session.current_phase) }}>{getPhaseLabel(session.current_phase)}</span></td>
+                        <td className="p-3 text-zinc-400">{session.pre_conviction ?? "—"}</td>
+                        <td className="p-3 text-zinc-400">{session.message_count}</td>
+                        <td className="p-3 font-mono text-zinc-400">{formatDuration(session.start_time, session.end_time)}</td>
+                        <td className="p-3 text-zinc-500">{formatDate(session.start_time)}</td>
+                        <td className="p-3 text-right"><Button variant="ghost" size="sm" onClick={() => handleViewSession(session.id)}>View</Button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </CardHeader>
-            <CardContent className="divide-y divide-zinc-800">
-              {MOCK_SESSIONS.map((session) => (
-                <div key={session.id} className="grid grid-cols-6 gap-4 py-3 items-center">
-                  <div>
-                    <span className="text-sm font-mono text-white">{session.id}</span>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      {format(session.startTime, "MMM d, HH:mm")}
-                    </p>
-                  </div>
-                  <div>
-                    <span className={`inline-flex px-2 py-0.5 text-xs rounded border ${STATUS_STYLES[session.status]}`}>
-                      {session.status}
-                    </span>
-                  </div>
-                  <div>
-                    <Badge phase={session.currentPhase} size="sm" />
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm text-zinc-400">
-                    <Clock className="w-3.5 h-3.5" />
-                    {session.endTime 
-                      ? `${Math.round((session.endTime.getTime() - session.startTime.getTime()) / 60000)}m`
-                      : "—"
-                    }
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm text-zinc-400">
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    {session.messages.length}
-                  </div>
-                  <div className="text-right">
-                    <Button variant="ghost" size="sm">
-                      <Eye className="w-3.5 h-3.5 mr-1" />
-                      View
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+            </Card>
+          )}
         </div>
       </div>
     </div>

@@ -1,116 +1,131 @@
-import { Header } from "../components/layout/Header";
-import { Card, CardHeader, CardContent } from "../components/ui/Card";
-import { Badge } from "../components/ui/Badge";
-import { Users, TrendingUp, Activity, Target, AlertTriangle } from "lucide-react";
-import type { Metrics, NEPQPhase } from "../types";
-
-const MOCK_METRICS: Metrics = {
-  totalSessions: 142,
-  activeSessions: 3,
-  completedSessions: 127,
-  averageConvictionDelta: 2.4,
-  conversionRate: 12.5,
-  failureModes: [
-    { phase: "CONSEQUENCE" as NEPQPhase, reason: "Failed to quantify stakes", count: 45, percentage: 35 },
-    { phase: "PROBLEM_AWARENESS" as NEPQPhase, reason: "Prospect not in-market", count: 30, percentage: 24 },
-    { phase: "COMMITMENT" as NEPQPhase, reason: "Price objection", count: 25, percentage: 20 },
-  ],
-};
-
-function MetricCard({ title, value, subtitle, icon: Icon }: { 
-  title: string; 
-  value: string | number; 
-  subtitle?: string;
-  icon: typeof Users;
-}) {
-  return (
-    <Card>
-      <CardContent className="pt-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-xs text-zinc-500 uppercase tracking-wider">{title}</p>
-            <p className="text-2xl font-semibold text-white mt-1">{value}</p>
-            {subtitle && <p className="text-xs text-zinc-400 mt-1">{subtitle}</p>}
-          </div>
-          <div className="p-2 rounded-lg bg-zinc-800">
-            <Icon className="w-4 h-4 text-zinc-400" />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+import { useState, useEffect } from "react";
+import { Header } from "../components/layout/Header.tsx";
+import { Card, CardHeader, CardContent } from "../components/ui/index";
+import { Badge } from "../components/ui/index";
+import { getMetrics } from "../lib/api";
+import { getPhaseLabel, getPhaseColor } from "../constants";
+import type { MetricsResponse } from "../lib/api";
 
 export function DashboardPage() {
+  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchMetrics = async () => {
+    try {
+      const data = await getMetrics();
+      setMetrics(data);
+      setError(null);
+    } catch {
+      setError("Cannot connect to backend. Is the server running?");
+    }
+  };
+
+  useEffect(() => {
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
-    <div className="h-screen flex flex-col bg-zinc-950">
+    <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
-      
       <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-6xl mx-auto space-y-6">
-          <div>
-            <h1 className="text-xl font-semibold text-white">Dashboard</h1>
-            <p className="text-sm text-zinc-400 mt-1">Real-time session telemetry and analytics</p>
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-lg font-semibold">Dashboard</h1>
+            <span className="text-[10px] text-zinc-600">Auto-refreshes every 10s</span>
           </div>
 
-          {/* Metrics Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <MetricCard 
-              title="Total Sessions" 
-              value={MOCK_METRICS.totalSessions} 
-              subtitle="+12 this week"
-              icon={Users} 
-            />
-            <MetricCard 
-              title="Active Now" 
-              value={MOCK_METRICS.activeSessions} 
-              icon={Activity} 
-            />
-            <MetricCard 
-              title="Avg. Conviction Δ" 
-              value={`+${MOCK_METRICS.averageConvictionDelta}`} 
-              subtitle="Points gained"
-              icon={TrendingUp} 
-            />
-            <MetricCard 
-              title="Conversion Rate" 
-              value={`${MOCK_METRICS.conversionRate}%`} 
-              subtitle="To workshop booking"
-              icon={Target} 
-            />
-          </div>
+          {error && (
+            <div className="mb-6 p-3 rounded-lg bg-red-900/20 border border-red-900/40 text-sm text-red-400">
+              {error}
+            </div>
+          )}
 
-          {/* Failure Modes */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-                <h2 className="font-medium text-white">Failure Modes</h2>
+          {!metrics && !error && (
+            <div className="text-sm text-zinc-500">Loading metrics...</div>
+          )}
+
+          {metrics && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                <MetricCard label="Total Sessions" value={metrics.total_sessions} />
+                <MetricCard label="Active Now" value={metrics.active_sessions} highlight />
+                <MetricCard label="Avg. Pre-Conviction" value={metrics.average_pre_conviction ? `${metrics.average_pre_conviction}/10` : "—"} />
+                <MetricCard label="Conversion Rate" value={`${metrics.conversion_rate}%`} />
               </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {MOCK_METRICS.failureModes.map((mode, i) => (
-                <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-zinc-800/50">
-                  <div className="flex items-center gap-3">
-                    <Badge phase={mode.phase} size="sm" />
-                    <span className="text-sm text-zinc-300">{mode.reason}</span>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <span className="text-sm text-zinc-400">{mode.count} sessions</span>
-                    <div className="w-24 h-2 bg-zinc-700 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-amber-500/70 rounded-full" 
-                        style={{ width: `${mode.percentage}%` }}
-                      />
+
+              <Card className="mb-6">
+                <CardHeader>
+                  <h2 className="text-sm font-medium text-zinc-300">Phase Distribution</h2>
+                </CardHeader>
+                <CardContent>
+                  {Object.keys(metrics.phase_distribution).length === 0 ? (
+                    <p className="text-sm text-zinc-600">No active sessions yet</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {Object.entries(metrics.phase_distribution).map(([phase, count]) => (
+                        <div key={phase} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full" style={{ background: getPhaseColor(phase) }} />
+                            <span className="text-sm text-zinc-300">{getPhaseLabel(phase)}</span>
+                          </div>
+                          <span className="text-sm font-mono text-zinc-500">{count}</span>
+                        </div>
+                      ))}
                     </div>
-                    <span className="text-xs text-zinc-500 w-8">{mode.percentage}%</span>
-                  </div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <h2 className="text-sm font-medium text-zinc-300">Drop-off Points</h2>
+                </CardHeader>
+                <CardContent>
+                  {metrics.failure_modes.length === 0 ? (
+                    <p className="text-sm text-zinc-600">No abandoned sessions yet</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {metrics.failure_modes.map(({ phase, count }) => {
+                        const maxCount = Math.max(...metrics.failure_modes.map((f) => f.count));
+                        return (
+                          <div key={phase} className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <Badge>{getPhaseLabel(phase)}</Badge>
+                              <span className="text-xs text-zinc-500">{count} session{count !== 1 ? "s" : ""}</span>
+                            </div>
+                            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all" style={{ width: `${(count / maxCount) * 100}%`, background: getPhaseColor(phase) }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <div className="mt-6 grid grid-cols-3 gap-4">
+                <Card><CardContent><div className="text-center"><p className="text-2xl font-semibold text-emerald-400">{metrics.completed_sessions}</p><p className="text-xs text-zinc-500 mt-1">Completed</p></div></CardContent></Card>
+                <Card><CardContent><div className="text-center"><p className="text-2xl font-semibold text-amber-400">{metrics.active_sessions}</p><p className="text-xs text-zinc-500 mt-1">Active</p></div></CardContent></Card>
+                <Card><CardContent><div className="text-center"><p className="text-2xl font-semibold text-red-400">{metrics.abandoned_sessions}</p><p className="text-xs text-zinc-500 mt-1">Abandoned</p></div></CardContent></Card>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+function MetricCard({ label, value, highlight }: { label: string; value: string | number; highlight?: boolean }) {
+  return (
+    <Card>
+      <CardContent>
+        <p className="text-xs text-zinc-500 mb-1">{label}</p>
+        <p className={`text-xl font-semibold ${highlight ? "text-emerald-400" : "text-white"}`}>{value}</p>
+      </CardContent>
+    </Card>
   );
 }
