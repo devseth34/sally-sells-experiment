@@ -33,6 +33,21 @@ from app.phase_definitions import get_phase_definition
 
 logger = logging.getLogger("sally.response")
 
+# Load fact sheet once at module level
+_FACT_SHEET_PATH = Path(__file__).resolve().parent.parent.parent / "fact_sheet.txt"
+_FACT_SHEET: str | None = None
+
+def _get_fact_sheet() -> str:
+    global _FACT_SHEET
+    if _FACT_SHEET is None:
+        try:
+            _FACT_SHEET = _FACT_SHEET_PATH.read_text()
+            logger.info(f"Fact sheet loaded from {_FACT_SHEET_PATH}")
+        except FileNotFoundError:
+            logger.warning(f"Fact sheet not found at {_FACT_SHEET_PATH}")
+            _FACT_SHEET = ""
+    return _FACT_SHEET
+
 # Lazy client — created on first use, not at import time
 _client: Anthropic | None = None
 
@@ -82,6 +97,7 @@ HARD RULES — VIOLATING THESE IS AN AUTOMATIC FAILURE:
 12. If the conversation has been going for more than 8-10 exchanges, start wrapping up. Long conversations lose deals.
 13. Never repeat a question you've already asked, even rephrased. Try a completely different angle or gracefully close.
 14. No filler phrases: "I understand," "That makes sense," "Absolutely," "Of course." Just respond directly.
+15. NEVER use generic follow-ups like "Can you tell me more?" or "Tell me more about that." Instead, ask a SPECIFIC follow-up that references what they just said. For example, if they mention a team of 8 people, ask "Are all 8 focused on the same thing, or is there a split in roles?" Always direct them based on what they shared.
 """
 
 # Words that should never appear in Sally's responses
@@ -102,28 +118,29 @@ FORBIDDEN_PHRASES = [
 ]
 
 
-def circuit_breaker(response_text: str, target_phase: NepqPhase) -> str:
+def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: bool = False) -> str:
     """
     Lightweight post-generation check. If the response violates hard rules,
     return a safe fallback instead.
 
     Checks:
-    1. Multiple questions (more than one '?' in the response)
+    1. Multiple questions (more than one '?' in the response) — skipped for closing messages
     2. Forbidden hype words
     3. Pitching before Consequence phase
-    4. Response too long (more than 5 sentences)
+    4. Response too long (more than 5 sentences) — relaxed for closing messages
 
     Returns the original response if clean, or a safe fallback if violated.
     """
     text_lower = response_text.lower()
 
-    # Check 1: Multiple questions
-    question_marks = response_text.count("?")
-    if question_marks > 1:
-        logger.warning(f"Circuit breaker: {question_marks} questions detected, stripping extras")
-        # Keep only up to the first question mark
-        first_q = response_text.index("?")
-        response_text = response_text[:first_q + 1].strip()
+    # Check 1: Multiple questions (skip for closing — links contain no questions but other text might)
+    if not is_closing:
+        question_marks = response_text.count("?")
+        if question_marks > 1:
+            logger.warning(f"Circuit breaker: {question_marks} questions detected, stripping extras")
+            # Keep only up to the first question mark
+            first_q = response_text.index("?")
+            response_text = response_text[:first_q + 1].strip()
 
     # Check 2: Forbidden words
     for word in FORBIDDEN_WORDS:
@@ -152,9 +169,10 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase) -> str:
                 logger.warning(f"Circuit breaker: pitch signal '{signal}' in early phase {target_phase.value}")
                 return "What's been the biggest challenge with that so far?"
 
-    # Check 5: Too long (more than 5 sentences)
+    # Check 5: Too long (more than 5 sentences, or 10 for closing messages with links)
+    max_sentences = 10 if is_closing else 5
     sentences = [s.strip() for s in re.split(r'[.!?]+', response_text) if s.strip()]
-    if len(sentences) > 5:
+    if len(sentences) > max_sentences:
         logger.warning(f"Circuit breaker: response too long ({len(sentences)} sentences), trimming")
         # Keep first 4 sentences
         trimmed = []
@@ -237,57 +255,55 @@ Make this transition SMOOTH and NATURAL. Don't say "Now let's move to the next t
 Instead, bridge from what they just said into your next question.
 """
 
-    # Add end instructions
+    # Add end instructions — NO links in chat text (the UI has a Book & Pay button)
     end_instructions = ""
     if decision.action == "END":
         end_instructions = """
 SESSION ENDING: Wrap up the conversation gracefully.
-Thank them for their time, summarize what you discussed briefly, and leave the door open.
-If they committed to the workshop, confirm next steps.
-If not, be warm and say you're available if they want to revisit.
+Thank them for their time, briefly reference what you discussed, and let them know next steps will appear on screen.
+Say something like: "I'll have the booking and payment details pop up for you right now."
+Do NOT paste any URLs or links in your response — the system handles that automatically.
+If they clearly said no or aren't interested, be warm, leave the door open, and end gracefully.
 """
 
-    # Add contact collection instructions
+    # Add contact collection instructions — email first, then phone, NO links
     contact_instructions = ""
     if target_phase == NepqPhase.COMMITMENT:
         profile_dict_check = profile.model_dump()
         needs_email = not profile_dict_check.get("email")
         needs_phone = not profile_dict_check.get("phone")
-        has_either = not needs_email or not needs_phone
 
-        if needs_email and needs_phone and not has_either:
+        if needs_email:
             contact_instructions = """
-CONTACT COLLECTION: The prospect has agreed. Now collect their info naturally.
-Ask: "That's great to hear! What's the best email to send the details over to?"
-Do NOT ask for both email and phone in the same message.
-"""
-        elif needs_email:
-            contact_instructions = """
-CONTACT COLLECTION: You still need their email.
-Ask naturally: "What's the best email to send the workshop details to?"
+CONTACT COLLECTION: The prospect has agreed. Now collect their email FIRST.
+Ask naturally: "That's great to hear! What's the best email to send the details over to?"
+Do NOT ask for phone yet — just email this turn.
+Do NOT include any URLs or links.
 """
         elif needs_phone:
             contact_instructions = """
-CONTACT COLLECTION: You have their email. Now get their phone.
+CONTACT COLLECTION: You have their email. Now get their phone number.
 Ask naturally: "And what's the best number to reach you at for scheduling?"
+Do NOT include any URLs or links.
 """
-        elif not needs_email and not needs_phone:
-            stripe_link = os.getenv("STRIPE_PAYMENT_LINK", "")
-            calendly_link = os.getenv("CALENDLY_URL", "")
-            contact_instructions = f"""
-CLOSING: You have their email and phone. Confirm next steps, include booking and payment links, and end warmly.
+        else:
+            contact_instructions = """
+CLOSING: You have their email and phone. Confirm next steps and close warmly.
+Say something like: "I'll send the details to [their email] and our team will reach out at [their phone]. The booking and payment info will pop up for you right now — really enjoyed our conversation, [name]!"
+Do NOT include any URLs or links — the system shows a Book & Pay button automatically.
+"""
 
-You MUST include these two links in your response (copy them exactly):
-- Booking link: {calendly_link}
-- Payment link: {stripe_link}
+    # Fact Sheet RAG — constrain Sally to verified facts only
+    fact_sheet = _get_fact_sheet()
+    fact_sheet_instructions = ""
+    if fact_sheet:
+        fact_sheet_instructions = f"""
+FACT SHEET (GROUND TRUTH):
+The following fact sheet is your ONLY source of truth about 100x and the Discovery Workshop.
+You MUST NOT invent, assume, or hallucinate any facts not in this document.
+If the prospect asks something not covered here, say you'll have the team follow up with details.
 
-Format your response like this:
-"Perfect — I'll send the details to [email] and our team will reach out at [phone]. In the meantime, here are your next steps:
-
-Book your Discovery Workshop: {calendly_link}
-Complete payment: {stripe_link}
-
-Really enjoyed our conversation today, [name]!"
+{fact_sheet}
 """
 
     prompt = f"""Generate Sally's next response in this conversation.
@@ -298,6 +314,7 @@ Really enjoyed our conversation today, [name]!"
 {transition_instructions}
 {end_instructions}
 {contact_instructions}
+{fact_sheet_instructions}
 
 WHAT WE KNOW ABOUT THIS PROSPECT:
 {json.dumps(profile_dict, indent=2) if profile_dict else "Limited info so far."}
@@ -350,9 +367,13 @@ def generate_response(
         decision, user_message, conversation_history, profile
     )
 
+    # Closing messages get slightly more room for a warm wrap-up
+    is_closing = decision.action == "END" or NepqPhase(decision.target_phase) in {NepqPhase.COMMITMENT, NepqPhase.TERMINATED}
+    max_tokens = 300 if is_closing else 200
+
     response = _get_client().messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=200,  # 2-4 sentences max
+        max_tokens=max_tokens,
         system=SALLY_PERSONA,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -363,8 +384,8 @@ def generate_response(
     if response_text.startswith('"') and response_text.endswith('"'):
         response_text = response_text[1:-1]
 
-    # Run circuit breaker
+    # Run circuit breaker (relaxed for closing messages with links)
     target_phase = NepqPhase(decision.target_phase)
-    response_text = circuit_breaker(response_text, target_phase)
+    response_text = circuit_breaker(response_text, target_phase, is_closing=is_closing)
 
     return response_text

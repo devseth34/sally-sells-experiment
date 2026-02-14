@@ -39,6 +39,8 @@ export interface SessionListItem {
   status: string;
   current_phase: string;
   pre_conviction: number | null;
+  post_conviction: number | null;
+  cds_score: number | null;
   message_count: number;
   start_time: number;
   end_time: number | null;
@@ -50,6 +52,7 @@ export interface MetricsResponse {
   completed_sessions: number;
   abandoned_sessions: number;
   average_pre_conviction: number | null;
+  average_cds: number | null;
   conversion_rate: number;
   phase_distribution: Record<string, number>;
   failure_modes: Array<{ phase: string; count: number }>;
@@ -107,4 +110,25 @@ export async function getConfig(): Promise<AppConfig> {
   const res = await fetch(`${API_BASE}/config`);
   if (!res.ok) throw new Error(`Failed to get config: ${res.statusText}`);
   return res.json();
+}
+
+export interface PostConvictionResponse {
+  session_id: string;
+  pre_conviction: number | null;
+  post_conviction: number;
+  cds_score: number;
+}
+
+export async function submitPostConviction(sessionId: string, postConviction: number): Promise<PostConvictionResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/post-conviction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ post_conviction: postConviction }),
+  });
+  if (!res.ok) throw new Error(`Failed to submit post-conviction: ${res.statusText}`);
+  return res.json();
+}
+
+export function getExportCsvUrl(): string {
+  return `${API_BASE}/export/csv`;
 }

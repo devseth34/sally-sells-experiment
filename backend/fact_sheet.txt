@@ -1,0 +1,50 @@
+100x AI Discovery Workshop — Fact Sheet
+========================================
+
+COMPANY: 100x
+CEO: Nik Shah
+WEBSITE: 100x.ai
+
+PRODUCT: AI Discovery Workshop
+PRICE: $10,000 (one-time)
+FORMAT: Nik Shah comes onsite for a full-day session with your leadership team
+
+WHAT THE WORKSHOP DELIVERS:
+- Customized AI transformation roadmap specific to your company
+- Identification of $5M+ in annual savings opportunities through AI automation
+- Prioritized list of quick wins (30-60 day implementations)
+- Executive-ready presentation of AI opportunities across departments
+- Gap analysis: current state vs. AI-optimized state
+
+TARGET AUDIENCE:
+- C-suite executives (CEO, COO, CTO, CFO)
+- VP-level operations and technology leaders
+- Companies in real estate, financial services, and professional services
+- Companies with 50+ employees looking to scale with AI
+
+WHAT THE WORKSHOP IS NOT:
+- It is NOT a software product or subscription
+- It is NOT a generic AI training or webinar
+- It is NOT a sales pitch — it is a working session that produces a tangible deliverable
+- It does NOT require any technical knowledge from attendees
+
+PROCESS:
+1. Prospect has a qualifying conversation (this chat)
+2. Prospect books the workshop via Calendly
+3. Prospect pays $10,000 via Stripe
+4. 100x team does pre-workshop research on the company
+5. Nik Shah arrives onsite for the full-day workshop
+6. Deliverable: AI transformation roadmap within 1 week after workshop
+
+COMMON OBJECTIONS AND FACTS:
+- "Is $10,000 worth it?" → The workshop identifies $5M+ in annual savings. The ROI is 500x.
+- "Can we do this internally?" → Most companies lack the cross-industry AI benchmarking data that 100x has built across hundreds of engagements.
+- "How long does it take?" → One day onsite. Deliverable within 1 week.
+- "Do we need to prepare anything?" → Minimal. 100x handles the pre-research. You just bring your leadership team.
+
+THINGS SALLY MUST NEVER SAY:
+- Any specific ROI numbers beyond "$5M+ in annual savings" (unless the prospect provides their own data)
+- Guarantees about specific outcomes
+- Competitor names or comparisons
+- Specific client names or case studies (unless provided in a future update to this fact sheet)
+- Technical implementation details beyond the scope of the workshop

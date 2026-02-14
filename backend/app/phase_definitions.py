@@ -35,20 +35,21 @@ PHASE_DEFINITIONS = {
     },
 
     NepqPhase.SITUATION: {
-        "purpose": "Understand the prospect's current operational state. What are they doing today?",
+        "purpose": "Understand the prospect's current operational state. What are they doing today? Spend 2-3 turns here to get a solid picture.",
         "exit_criteria": [
             "Prospect has described their current workflow or process",
             "Prospect has mentioned specific tools, methods, or team structure",
             "Sally has a clear picture of the status quo",
         ],
-        "confidence_threshold": 70,
+        "confidence_threshold": 65,
         "sally_objectives": [
             "Map out how they currently handle the area AI could improve",
             "Understand team size, tools, and manual processes",
             "Get concrete details, not vague descriptions",
+            "Ask context-aware follow-ups based on what they've shared (e.g. if they mention a team, ask about roles or how work is split)",
         ],
         "extraction_targets": ["current_state", "team_size", "tools_mentioned"],
-        "max_retries": 4,
+        "max_retries": 3,
         "question_patterns": [
             "Walk me through how your team currently handles [their area]...",
             "What does a typical week look like for you in terms of [their process]?",
@@ -63,14 +64,15 @@ PHASE_DEFINITIONS = {
             "The pain point was stated by the prospect, not suggested by Sally",
             "Prospect acknowledges this is a real problem, not hypothetical",
         ],
-        "confidence_threshold": 75,
+        "confidence_threshold": 65,
         "sally_objectives": [
             "Help the prospect recognize what's not working",
             "Get them to say the problem in their own words",
-            "Do NOT suggest problems — ask questions that surface them",
+            "Do NOT suggest problems — ask directed questions that reference their specific situation (e.g. 'You mentioned your team handles X manually — how has that been scaling?')",
+            "Once they name ONE real pain point, that's enough — move on",
         ],
         "extraction_targets": ["pain_points", "frustrations"],
-        "max_retries": 5,
+        "max_retries": 3,
         "question_patterns": [
             "How has that been working out? Any areas where it falls short?",
             "What's the most frustrating part of that process?",
@@ -85,14 +87,15 @@ PHASE_DEFINITIONS = {
             "Prospect has mentioned specific outcomes or metrics they'd want",
             "There is a clear contrast between current state and desired state",
         ],
-        "confidence_threshold": 75,
+        "confidence_threshold": 65,
         "sally_objectives": [
             "Get the prospect to paint a picture of their ideal outcome",
             "Help them articulate measurable success criteria",
             "Build the 'gap' between where they are and where they want to be",
+            "Reference the pain points they mentioned earlier — connect the dots for them",
         ],
         "extraction_targets": ["desired_state", "success_metrics"],
-        "max_retries": 4,
+        "max_retries": 3,
         "question_patterns": [
             "If this was working perfectly, what would that look like for you?",
             "What would need to be true for you to feel like this problem was solved?",

@@ -20,6 +20,7 @@ class DBSession(Base):
     current_phase = Column(String, default="CONNECTION")
     pre_conviction = Column(Integer, nullable=True)
     post_conviction = Column(Integer, nullable=True)
+    cds_score = Column(Integer, nullable=True)
     start_time = Column(Float)
     end_time = Column(Float, nullable=True)
     message_count = Column(Integer, default=0)
@@ -29,6 +30,7 @@ class DBSession(Base):
     turn_number = Column(Integer, default=0)
     prospect_profile = Column(Text, default="{}")
     thought_logs = Column(Text, default="[]")
+    escalation_sent = Column(String, nullable=True)
 
 
 class DBMessage(Base):

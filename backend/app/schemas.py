@@ -78,9 +78,22 @@ class SessionListItem(BaseModel):
     status: str
     current_phase: str
     pre_conviction: Optional[int]
+    post_conviction: Optional[int]
+    cds_score: Optional[int]
     message_count: int
     start_time: float
     end_time: Optional[float]
+
+
+class PostConvictionRequest(BaseModel):
+    post_conviction: int = Field(..., ge=1, le=10, description="Post-chat conviction score 1-10")
+
+
+class PostConvictionResponse(BaseModel):
+    session_id: str
+    pre_conviction: Optional[int]
+    post_conviction: int
+    cds_score: int
 
 
 class MetricsResponse(BaseModel):
@@ -89,6 +102,7 @@ class MetricsResponse(BaseModel):
     completed_sessions: int
     abandoned_sessions: int
     average_pre_conviction: Optional[float]
+    average_cds: Optional[float]
     conversion_rate: float
     phase_distribution: dict
     failure_modes: List[dict]

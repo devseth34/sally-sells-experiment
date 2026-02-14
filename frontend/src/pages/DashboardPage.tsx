@@ -48,10 +48,11 @@ export function DashboardPage() {
 
           {metrics && (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
                 <MetricCard label="Total Sessions" value={metrics.total_sessions} />
                 <MetricCard label="Active Now" value={metrics.active_sessions} highlight />
                 <MetricCard label="Avg. Pre-Conviction" value={metrics.average_pre_conviction ? `${metrics.average_pre_conviction}/10` : "—"} />
+                <MetricCard label="Avg. CDS" value={metrics.average_cds != null ? `${metrics.average_cds > 0 ? "+" : ""}${metrics.average_cds}` : "—"} highlight={metrics.average_cds != null && metrics.average_cds > 0} />
                 <MetricCard label="Conversion Rate" value={`${metrics.conversion_rate}%`} />
               </div>
 

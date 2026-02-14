@@ -7,12 +7,18 @@ Persists prospect profile and thought logs per session.
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSessionType
 from sqlalchemy import func
 import uuid
 import time
 import json
+import csv
+import io
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import os
 from .database import get_db, DBSession, DBMessage, init_db
@@ -26,6 +32,8 @@ from .schemas import (
     SessionDetailResponse,
     SessionListItem,
     MetricsResponse,
+    PostConvictionRequest,
+    PostConvictionResponse,
 )
 from .agent import SallyEngine
 
@@ -190,6 +198,29 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         db_session.status = "completed"
         db_session.end_time = time.time()
 
+    # Gmail escalation: trigger when entering OWNERSHIP (first time only)
+    if new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
+        try:
+            profile_for_email = json.loads(db_session.prospect_profile or "{}")
+            all_msgs = (
+                db.query(DBMessage)
+                .filter(DBMessage.session_id == session_id)
+                .order_by(DBMessage.timestamp)
+                .all()
+            )
+            transcript_lines = []
+            for m in all_msgs:
+                role_label = "Sally" if m.role == "assistant" else "Prospect"
+                transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
+            transcript_lines.append(f"[{current_phase.value}] Prospect: {request.content}")
+            transcript_text = "\n".join(transcript_lines)
+
+            sent = _send_escalation_email(session_id, profile_for_email, transcript_text)
+            if sent:
+                db_session.escalation_sent = time.time()
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Escalation trigger error: {e}")
+
     # Save assistant message
     assistant_msg_id = str(uuid.uuid4())
     assistant_msg = DBMessage(
@@ -290,6 +321,8 @@ def list_sessions(db: DBSessionType = Depends(get_db)):
             status=s.status,
             current_phase=s.current_phase,
             pre_conviction=s.pre_conviction,
+            post_conviction=s.post_conviction,
+            cds_score=s.cds_score,
             message_count=s.message_count,
             start_time=s.start_time,
             end_time=s.end_time,
@@ -307,6 +340,7 @@ def get_metrics(db: DBSessionType = Depends(get_db)):
     completed = db.query(DBSession).filter(DBSession.status == "completed").count()
     abandoned = db.query(DBSession).filter(DBSession.status == "abandoned").count()
     avg_conviction = db.query(func.avg(DBSession.pre_conviction)).scalar()
+    avg_cds = db.query(func.avg(DBSession.cds_score)).filter(DBSession.cds_score.isnot(None)).scalar()
     conversion_rate = (completed / total * 100) if total > 0 else 0.0
 
     phase_dist = {}
@@ -330,6 +364,7 @@ def get_metrics(db: DBSessionType = Depends(get_db)):
         completed_sessions=completed,
         abandoned_sessions=abandoned,
         average_pre_conviction=round(avg_conviction, 1) if avg_conviction else None,
+        average_cds=round(avg_cds, 1) if avg_cds else None,
         conversion_rate=round(conversion_rate, 1),
         phase_distribution=phase_dist,
         failure_modes=failure_modes,
@@ -388,3 +423,143 @@ def get_config():
         "stripe_payment_link": os.getenv("STRIPE_PAYMENT_LINK", ""),
         "calendly_url": os.getenv("CALENDLY_URL", ""),
     }
+
+
+# --- Post-Conviction + CDS Score ---
+
+@app.post("/api/sessions/{session_id}/post-conviction", response_model=PostConvictionResponse)
+def submit_post_conviction(session_id: str, request: PostConvictionRequest, db: DBSessionType = Depends(get_db)):
+    """Submit post-chat conviction score and compute CDS (Conviction Delta Score)."""
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    db_session.post_conviction = request.post_conviction
+    pre = db_session.pre_conviction or 0
+    cds = request.post_conviction - pre
+    db_session.cds_score = cds
+    db.commit()
+
+    return PostConvictionResponse(
+        session_id=session_id,
+        pre_conviction=db_session.pre_conviction,
+        post_conviction=request.post_conviction,
+        cds_score=cds,
+    )
+
+
+# --- CSV Export ---
+
+@app.get("/api/export/csv")
+def export_csv(db: DBSessionType = Depends(get_db)):
+    """Export all sessions + transcripts as a CSV for research analysis."""
+    sessions = db.query(DBSession).order_by(DBSession.start_time.desc()).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "session_id", "status", "final_phase", "pre_conviction", "post_conviction",
+        "cds_score", "message_count", "turn_number", "start_time", "end_time",
+        "duration_seconds", "prospect_name", "prospect_role", "prospect_company",
+        "objections_encountered", "transcript",
+    ])
+
+    for s in sessions:
+        # Parse profile for prospect info
+        try:
+            profile = json.loads(s.prospect_profile or "{}")
+        except json.JSONDecodeError:
+            profile = {}
+
+        # Build transcript
+        messages = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == s.id)
+            .order_by(DBMessage.timestamp)
+            .all()
+        )
+        transcript_lines = []
+        for m in messages:
+            role_label = "Sally" if m.role == "assistant" else "Prospect"
+            transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
+        transcript = "\n".join(transcript_lines)
+
+        duration = None
+        if s.end_time and s.start_time:
+            duration = round(s.end_time - s.start_time)
+
+        writer.writerow([
+            s.id,
+            s.status,
+            s.current_phase,
+            s.pre_conviction,
+            s.post_conviction,
+            s.cds_score,
+            s.message_count,
+            s.turn_number,
+            s.start_time,
+            s.end_time,
+            duration,
+            profile.get("name", ""),
+            profile.get("role", ""),
+            profile.get("company", ""),
+            "; ".join(profile.get("objections_encountered", [])),
+            transcript,
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=sally_sells_export.csv"},
+    )
+
+
+# --- Gmail Escalation ---
+
+def _send_escalation_email(session_id: str, profile: dict, transcript: str) -> bool:
+    """Send escalation email with full transcript when prospect reaches OWNERSHIP."""
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+    escalation_to = os.getenv("ESCALATION_EMAIL")
+
+    if not all([gmail_user, gmail_app_password, escalation_to]):
+        logger.warning(f"[Session {session_id}] Gmail escalation skipped — missing GMAIL_USER, GMAIL_APP_PASSWORD, or ESCALATION_EMAIL in .env")
+        return False
+
+    prospect_name = profile.get("name", "Unknown")
+    prospect_company = profile.get("company", "Unknown")
+    prospect_role = profile.get("role", "Unknown")
+
+    subject = f"Sally Sells Escalation — {prospect_name} ({prospect_company})"
+
+    body = f"""QUALIFIED LEAD — OWNERSHIP PHASE REACHED
+
+Prospect: {prospect_name}
+Role: {prospect_role}
+Company: {prospect_company}
+Session ID: {session_id}
+
+Pain Points: {', '.join(profile.get('pain_points', ['N/A']))}
+Objections: {', '.join(profile.get('objections_encountered', ['None']))}
+
+--- FULL TRANSCRIPT ---
+
+{transcript}
+"""
+
+    msg = MIMEMultipart()
+    msg["From"] = gmail_user
+    msg["To"] = escalation_to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_app_password)
+            server.sendmail(gmail_user, escalation_to, msg.as_string())
+        logger.info(f"[Session {session_id}] Escalation email sent to {escalation_to}")
+        return True
+    except Exception as e:
+        logger.error(f"[Session {session_id}] Escalation email failed: {e}")
+        return False

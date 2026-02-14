@@ -5,9 +5,10 @@ import { PhaseIndicator } from "../components/chat/PhaseIndicator.tsx";
 import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
+import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
 import { createSession, sendMessage } from "../lib/api";
 import { formatTime } from "../lib/utils";
-import type { MessageResponse } from "../lib/api";
+import type { MessageResponse, PostConvictionResponse } from "../lib/api";
 
 export function ChatPage() {
   const navigate = useNavigate();
@@ -18,6 +19,8 @@ export function ChatPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [preConviction, setPreConviction] = useState<number | null>(null);
+  const [showPostModal, setShowPostModal] = useState(false);
+  const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
 
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -79,6 +82,7 @@ export function ChatPage() {
       setCurrentPhase(res.current_phase);
       if (res.session_ended) {
         setSessionEnded(true);
+        setShowPostModal(true);
       }
     } catch (err) {
       console.error("Failed to send message:", err);
@@ -93,6 +97,8 @@ export function ChatPage() {
     setCurrentPhase("CONNECTION");
     setSessionEnded(false);
     setPreConviction(null);
+    setShowPostModal(false);
+    setCdsResult(null);
     setSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     setShowModal(true);
@@ -103,6 +109,17 @@ export function ChatPage() {
       <Header />
 
       {showModal && <ConvictionModal onStart={handleStartSession} />}
+
+      {showPostModal && sessionId && (
+        <PostConvictionModal
+          sessionId={sessionId}
+          preConviction={preConviction}
+          onComplete={(result) => {
+            setCdsResult(result);
+            setShowPostModal(false);
+          }}
+        />
+      )}
 
       {!sessionId && !showModal && (
         <div className="flex-1 flex items-center justify-center">
@@ -167,13 +184,20 @@ export function ChatPage() {
             disabled={isLoading || sessionEnded}
           />
 
-          {sessionEnded && (
+          {sessionEnded && !showPostModal && (
             <div className="px-4 py-3 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between">
-              <span className="text-xs text-zinc-400">
-                Session completed — {currentPhase}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-400">
+                  Session completed — {currentPhase}
+                </span>
+                {cdsResult && (
+                  <span className={`text-xs font-mono ${cdsResult.cds_score > 0 ? "text-emerald-400" : cdsResult.cds_score < 0 ? "text-red-400" : "text-zinc-500"}`}>
+                    CDS: {cdsResult.cds_score > 0 ? "+" : ""}{cdsResult.cds_score}
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
-                {currentPhase === "TERMINATED" && sessionId && (
+                {sessionId && (
                   <button
                     onClick={() => navigate(`/booking/${sessionId}`)}
                     className="h-8 px-4 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors"

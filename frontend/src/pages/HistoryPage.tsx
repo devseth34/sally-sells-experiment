@@ -3,7 +3,7 @@ import { Header } from "../components/layout/Header.tsx";
 import { Card, CardHeader, CardContent } from "../components/ui/index";
 import { Badge } from "../components/ui/index";
 import { Button } from "../components/ui/index";
-import { listSessions, getSession } from "../lib/api";
+import { listSessions, getSession, getExportCsvUrl } from "../lib/api";
 import { getPhaseLabel, getPhaseColor } from "../constants";
 import { formatDate, formatDuration, formatTimestamp } from "../lib/utils";
 import type { SessionListItem, SessionDetail } from "../lib/api";
@@ -100,7 +100,16 @@ export function HistoryPage() {
         <div className="max-w-5xl mx-auto">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-lg font-semibold">Session History</h1>
-            <Button variant="secondary" size="sm" onClick={fetchSessions}>Refresh</Button>
+            <div className="flex items-center gap-2">
+              <a
+                href={getExportCsvUrl()}
+                download
+                className="inline-flex items-center h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+              >
+                Download CSV
+              </a>
+              <Button variant="secondary" size="sm" onClick={fetchSessions}>Refresh</Button>
+            </div>
           </div>
 
           {error && <div className="mb-6 p-3 rounded-lg bg-red-900/20 border border-red-900/40 text-sm text-red-400">{error}</div>}
@@ -120,6 +129,7 @@ export function HistoryPage() {
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Status</th>
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Phase</th>
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Pre-Score</th>
+                      <th className="text-left p-3 text-xs text-zinc-500 font-medium">CDS</th>
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Messages</th>
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Duration</th>
                       <th className="text-left p-3 text-xs text-zinc-500 font-medium">Started</th>
@@ -133,6 +143,15 @@ export function HistoryPage() {
                         <td className="p-3"><Badge variant={session.status === "completed" ? "success" : session.status === "active" ? "warning" : "danger"}>{session.status}</Badge></td>
                         <td className="p-3"><span className="text-xs font-medium" style={{ color: getPhaseColor(session.current_phase) }}>{getPhaseLabel(session.current_phase)}</span></td>
                         <td className="p-3 text-zinc-400">{session.pre_conviction ?? "—"}</td>
+                        <td className="p-3">
+                          {session.cds_score != null ? (
+                            <span className={`font-mono text-xs ${session.cds_score > 0 ? "text-emerald-400" : session.cds_score < 0 ? "text-red-400" : "text-zinc-500"}`}>
+                              {session.cds_score > 0 ? "+" : ""}{session.cds_score}
+                            </span>
+                          ) : (
+                            <span className="text-zinc-600">—</span>
+                          )}
+                        </td>
                         <td className="p-3 text-zinc-400">{session.message_count}</td>
                         <td className="p-3 font-mono text-zinc-400">{formatDuration(session.start_time, session.end_time)}</td>
                         <td className="p-3 text-zinc-500">{formatDate(session.start_time)}</td>
