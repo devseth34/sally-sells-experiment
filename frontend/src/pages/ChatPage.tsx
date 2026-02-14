@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { Header } from "../components/layout/Header.tsx";
 import { PhaseIndicator } from "../components/chat/PhaseIndicator.tsx";
 import { MessageBubble } from "../components/chat/MessageBubble.tsx";
@@ -9,6 +10,7 @@ import { formatTime } from "../lib/utils";
 import type { MessageResponse } from "../lib/api";
 
 export function ChatPage() {
+  const navigate = useNavigate();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentPhase, setCurrentPhase] = useState("CONNECTION");
   const [messages, setMessages] = useState<MessageResponse[]>([]);
@@ -54,10 +56,26 @@ export function ChatPage() {
 
   const handleSendMessage = async (content: string) => {
     if (!sessionId || isLoading) return;
+
+    // Optimistic: show user message immediately
+    const optimisticMsg: MessageResponse = {
+      id: `temp-${Date.now()}`,
+      role: "user",
+      content,
+      timestamp: Date.now() / 1000,
+      phase: currentPhase,
+    };
+    setMessages((prev) => [...prev, optimisticMsg]);
+    setIsLoading(true);
+
     try {
-      setIsLoading(true);
       const res = await sendMessage(sessionId, content);
-      setMessages((prev) => [...prev, res.user_message, res.assistant_message]);
+      // Replace optimistic message with real one, add assistant reply
+      setMessages((prev) => [
+        ...prev.filter((m) => m.id !== optimisticMsg.id),
+        res.user_message,
+        res.assistant_message,
+      ]);
       setCurrentPhase(res.current_phase);
       if (res.session_ended) {
         setSessionEnded(true);
@@ -154,12 +172,22 @@ export function ChatPage() {
               <span className="text-xs text-zinc-400">
                 Session completed — {currentPhase}
               </span>
-              <button
-                onClick={handleNewSession}
-                className="h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
-              >
-                New Session
-              </button>
+              <div className="flex items-center gap-2">
+                {currentPhase === "TERMINATED" && sessionId && (
+                  <button
+                    onClick={() => navigate(`/booking/${sessionId}`)}
+                    className="h-8 px-4 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors"
+                  >
+                    Book & Pay →
+                  </button>
+                )}
+                <button
+                  onClick={handleNewSession}
+                  className="h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                >
+                  New Session
+                </button>
+              </div>
             </div>
           )}
         </>

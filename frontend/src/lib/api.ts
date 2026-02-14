@@ -97,3 +97,14 @@ export async function endSession(sessionId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/end`, { method: "POST" });
   if (!res.ok) throw new Error(`Failed to end session: ${res.statusText}`);
 }
+
+export interface AppConfig {
+  stripe_payment_link: string;
+  calendly_url: string;
+}
+
+export async function getConfig(): Promise<AppConfig> {
+  const res = await fetch(`${API_BASE}/config`);
+  if (!res.ok) throw new Error(`Failed to get config: ${res.statusText}`);
+  return res.json();
+}

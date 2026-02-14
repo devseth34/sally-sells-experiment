@@ -1,19 +1,47 @@
-from .schemas import NepqPhase
+from __future__ import annotations
+"""
+Sally Sells — The NEPQ Engine (Orchestrator)
 
-# NEPQ Phase Order (the strict sequence)
-PHASE_ORDER = [
-    NepqPhase.CONNECTION,
-    NepqPhase.SITUATION,
-    NepqPhase.PROBLEM_AWARENESS,
-    NepqPhase.SOLUTION_AWARENESS,
-    NepqPhase.CONSEQUENCE,
-    NepqPhase.OWNERSHIP,
-    NepqPhase.COMMITMENT,
-]
+Orchestrates the three layers:
+1. Comprehension (Layer 1) — analyze the user message
+2. Decision (Layer 2) — decide what to do
+3. Response (Layer 3) — generate Sally's reply
+"""
+
+import json
+import logging
+from typing import Optional
+
+from app.schemas import NepqPhase
+from app.models import (
+    ComprehensionOutput,
+    DecisionOutput,
+    ThoughtLog,
+    ProspectProfile,
+    ObjectionType,
+)
+from app.layers.comprehension import run_comprehension
+from app.layers.decision import make_decision
+from app.layers.response import generate_response
+
+logger = logging.getLogger("sally.engine")
 
 
 class SallyEngine:
-    """The NEPQ State Machine Engine."""
+    """
+    The NEPQ Sales Engine.
+
+    Usage:
+        result = SallyEngine.process_turn(
+            current_phase=NepqPhase.CONNECTION,
+            user_message="Hi, I'm the VP of Ops at Acme Realty",
+            conversation_history=[...],
+            profile_json="{}",
+            retry_count=0,
+            turn_number=1,
+            conversation_start_time=1707400000.0,
+        )
+    """
 
     @staticmethod
     def get_greeting() -> str:
@@ -24,33 +52,141 @@ class SallyEngine:
         )
 
     @staticmethod
-    def get_next_phase(current_phase: NepqPhase) -> NepqPhase:
-        if current_phase == NepqPhase.COMMITMENT:
-            return NepqPhase.TERMINATED
-        if current_phase == NepqPhase.TERMINATED:
-            return NepqPhase.TERMINATED
-        try:
-            current_index = PHASE_ORDER.index(current_phase)
-            if current_index < len(PHASE_ORDER) - 1:
-                return PHASE_ORDER[current_index + 1]
-        except ValueError:
-            pass
-        return NepqPhase.TERMINATED
-
-    @staticmethod
-    def should_transition(current_phase: NepqPhase, message_count_in_phase: int) -> bool:
-        return message_count_in_phase >= 2
-
-    @staticmethod
-    def generate_response(current_phase: NepqPhase, user_message: str) -> str:
-        responses = {
-            NepqPhase.CONNECTION: "That's great to hear! Tell me more about what your team is currently working on?",
-            NepqPhase.SITUATION: "I see. How has that been working out for you? Any challenges?",
-            NepqPhase.PROBLEM_AWARENESS: "That sounds frustrating. If you could fix this, what would it look like?",
-            NepqPhase.SOLUTION_AWARENESS: "That's a compelling vision. What's the cost of NOT solving this?",
-            NepqPhase.CONSEQUENCE: "Those are significant stakes. What's your timeline for making a decision?",
-            NepqPhase.OWNERSHIP: "Based on everything, I think our $10,000 Discovery Workshop would be perfect. Ready to move forward?",
-            NepqPhase.COMMITMENT: "Excellent! I'll send over the details. Thank you!",
-            NepqPhase.TERMINATED: "Thank you for the conversation!",
+    def update_profile(
+        profile: ProspectProfile,
+        updates: dict,
+    ) -> ProspectProfile:
+        """
+        Apply extracted updates from Layer 1 to the prospect profile.
+        Handles list fields (append) vs scalar fields (replace).
+        """
+        list_fields = {
+            "pain_points", "frustrations", "tools_mentioned",
+            "success_metrics", "objections_encountered", "objections_resolved",
         }
-        return responses.get(current_phase, "Tell me more about that.")
+
+        profile_dict = profile.model_dump()
+
+        for key, value in updates.items():
+            if key not in profile_dict:
+                continue
+
+            if key in list_fields:
+                existing = profile_dict.get(key, [])
+                if isinstance(value, list):
+                    for item in value:
+                        if item and item not in existing:
+                            existing.append(item)
+                elif isinstance(value, str) and value:
+                    if value not in existing:
+                        existing.append(value)
+                profile_dict[key] = existing
+            else:
+                if value is not None and value != "":
+                    profile_dict[key] = value
+
+        return ProspectProfile(**profile_dict)
+
+    @staticmethod
+    def process_turn(
+        current_phase: NepqPhase,
+        user_message: str,
+        conversation_history: list[dict],
+        profile_json: str,
+        retry_count: int,
+        turn_number: int,
+        conversation_start_time: float,
+    ) -> dict:
+        """
+        Process a single conversation turn through all three layers.
+
+        Returns:
+            {
+                "response_text": str,
+                "new_phase": str,
+                "new_profile_json": str,
+                "thought_log_json": str,
+                "phase_changed": bool,
+                "session_ended": bool,
+                "retry_count": int,
+            }
+        """
+
+        # Load profile
+        try:
+            profile_data = json.loads(profile_json) if profile_json else {}
+            profile = ProspectProfile(**profile_data)
+        except (json.JSONDecodeError, Exception):
+            profile = ProspectProfile()
+
+        # Layer 1: Comprehension
+        logger.info(f"[Turn {turn_number}] Layer 1: Analyzing message in {current_phase.value}")
+        comprehension = run_comprehension(
+            current_phase=current_phase,
+            user_message=user_message,
+            conversation_history=conversation_history,
+            prospect_profile=profile,
+        )
+        logger.info(f"[Turn {turn_number}] Layer 1 result: intent={comprehension.user_intent}, "
+                     f"objection={comprehension.objection_type}, "
+                     f"exit_confidence={comprehension.exit_evaluation.confidence}%")
+
+        # Update profile with Layer 1 extractions
+        if comprehension.profile_updates:
+            profile = SallyEngine.update_profile(profile, comprehension.profile_updates)
+            logger.info(f"[Turn {turn_number}] Profile updated: {list(comprehension.profile_updates.keys())}")
+
+        # Track objections in profile
+        if comprehension.objection_type != ObjectionType.NONE:
+            objection_text = f"{comprehension.objection_type.value}: {comprehension.objection_detail or 'unspecified'}"
+            if objection_text not in profile.objections_encountered:
+                profile.objections_encountered.append(objection_text)
+
+        # Layer 2: Decision
+        logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
+        decision = make_decision(
+            current_phase=current_phase,
+            comprehension=comprehension,
+            profile=profile,
+            retry_count=retry_count,
+            conversation_turn=turn_number,
+            conversation_start_time=conversation_start_time,
+        )
+        logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
+                     f"target_phase={decision.target_phase}, reason={decision.reason}")
+
+        # Layer 3: Response (with circuit breaker)
+        logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase}")
+        response_text = generate_response(
+            decision=decision,
+            user_message=user_message,
+            conversation_history=conversation_history,
+            profile=profile,
+        )
+        logger.info(f"[Turn {turn_number}] Layer 3 result: '{response_text[:80]}...'")
+
+        # Build ThoughtLog
+        thought_log = ThoughtLog(
+            turn_number=turn_number,
+            user_message=user_message,
+            comprehension=comprehension,
+            decision=decision,
+            response_phase=decision.target_phase,
+            response_text=response_text,
+            profile_snapshot=profile.model_dump(),
+        )
+
+        # Determine state changes
+        new_phase = NepqPhase(decision.target_phase)
+        phase_changed = new_phase != current_phase
+        session_ended = decision.action == "END" or new_phase == NepqPhase.TERMINATED
+
+        return {
+            "response_text": response_text,
+            "new_phase": decision.target_phase,
+            "new_profile_json": json.dumps(profile.model_dump()),
+            "thought_log_json": json.dumps(thought_log.model_dump()),
+            "phase_changed": phase_changed,
+            "session_ended": session_ended,
+            "retry_count": decision.retry_count,
+        }
