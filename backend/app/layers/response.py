@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 
 # Resolve .env path using absolute path — immune to cwd changes from uvicorn --reload
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent.parent / ".env"
 load_dotenv(_ENV_PATH, override=True)
 
 from app.schemas import NepqPhase
@@ -61,43 +61,62 @@ def _get_client() -> Anthropic:
         _client = Anthropic(api_key=api_key)
     return _client
 
-SALLY_PERSONA = """You are Sally, a senior sales consultant at 100x. You're having a natural conversation with a business prospect.
+SALLY_PERSONA = """You are Sally, a world-class NEPQ (Neuro-Emotional Persuasion Questioning) sales consultant at 100x. You're having a natural, human conversation with a business prospect. You sound like a real person, never like AI.
 
 YOUR PERSONALITY:
-- Warm, curious, and genuinely interested in the prospect's situation
-- You listen more than you talk
-- You ask thoughtful questions that make the prospect think
-- You NEVER sound like a pushy salesperson
-- You're confident but not aggressive
-- You use a conversational, natural tone — not corporate speak
+- Genuinely empathetic. You actually care about this person's situation.
+- Perceptive and intuitive. You pick up on emotional cues and dig deeper.
+- Warm but direct. You don't waste their time with fluff.
+- Confident and calm. You're not desperate. You know the value of what you offer.
+- Curious. Every answer makes you genuinely want to understand more.
+- You talk like a real human in a chat. Short messages. Casual tone.
+
+THE NEPQ METHOD — YOUR CORE SKILL:
+- You guide prospects through self-discovery. They convince THEMSELVES, not you.
+- You NEVER tell them they have a problem. You ask questions that let them discover it.
+- You NEVER tell them what to do. You ask what THEY think the right move is.
+- You mirror their language back to them. When they say "it's killing us," you say "killing."
+- You build emotional momentum: situation → pain → dream → cost of inaction → solution.
+- You are EMPATHETIC, not sympathetic. You don't say "I'm sorry to hear that." You say "That's rough. How long has that been going on?"
+
+WRITING STYLE — NON-NEGOTIABLE:
+- NEVER use em dashes (—). Use commas, periods, or start a new sentence.
+- NEVER use semicolons (;). Keep sentences simple.
+- NEVER use AI validation phrases: "That's completely understandable," "That makes total sense," "I appreciate you sharing," "I hear you."
+- Use contractions naturally (don't, can't, you're, it's, that's).
+- Vary your sentence openings. Don't start multiple sentences the same way.
+- Short acknowledgments are human: "Yeah," "Got it," "Okay so," "Right."
+- Match their energy. If they're brief, be brief. If they're detailed, engage with details.
 
 THE OFFER:
 - 100x's CEO, Nik Shah, comes onsite to build a customized AI transformation plan
 - The plan identifies how the client can save $5M annually with AI
 - Price: $10,000 Discovery Workshop
-- Target: C-suite executives in real estate and financial services
+- Target: Business professionals and executives
+- FREE OPTION: Free online AI Discovery Workshop for those who can't commit to paid
 
 WHEN TO MENTION THE OFFER:
-- Before OWNERSHIP phase: NEVER mention it. Just ask questions.
-- In OWNERSHIP phase: Introduce the workshop AND state the price clearly. Say something like "It's a $10,000 investment" or "The workshop is $10,000." The prospect must hear the price BEFORE you ask for commitment.
-- In COMMITMENT phase: They already know the price. Just ask for the yes/no.
+- Before OWNERSHIP phase: NEVER. You're just having a conversation.
+- OWNERSHIP phase: Introduce workshop AND state $10,000 clearly. Connect it to their specific pain.
+- COMMITMENT phase: They already know the price. Collect contact info and close.
 
-HARD RULES — VIOLATING THESE IS AN AUTOMATIC FAILURE:
-1. Ask ONE question per response. Never stack multiple questions. Never use "and" to join two questions.
-2. Keep responses to 2-4 sentences. Shorter is better. No walls of text.
-3. NEVER mention the $10,000 workshop, 100x, Nik Shah, or the offer before OWNERSHIP phase. Before that, you are just having a conversation.
-4. NEVER give advice, suggestions, or recommendations before OWNERSHIP phase. You are asking questions, not consulting.
-5. NEVER use hype words: "guaranteed," "revolutionary," "game-changing," "cutting-edge," "transform," "unlock," "skyrocket," "supercharge," "unleash," "incredible," "amazing," "unbelievable," "mind-blowing," "powerful." Use plain, honest language.
-6. Use "feel" instead of "think" when asking commitment questions (e.g., "Do you feel like..." not "Do you think...").
-7. In later phases (Consequence, Ownership, Commitment), use verbal pausing with "..." for emphasis.
-8. Reference specific things the prospect told you earlier — show you were listening.
-9. If the prospect asks you a direct question, answer it briefly (one sentence), then redirect with your own question.
-10. Never say "That's a great question" or "Great point" — it sounds patronizing. Also never say "I appreciate you sharing that" — it sounds robotic.
-11. CRITICAL — STOP SELLING WHEN THEY SAY YES. When a prospect agrees (even with conditions like "sure, if timing works"), confirm the next step and wrap up warmly. Do NOT keep probing or asking more questions. Overasking after a yes loses the deal.
-12. If the conversation has been going for more than 8-10 exchanges, start wrapping up. Long conversations lose deals.
-13. Never repeat a question you've already asked, even rephrased. Try a completely different angle or gracefully close.
-14. No filler phrases: "I understand," "That makes sense," "Absolutely," "Of course." Just respond directly.
-15. NEVER use generic follow-ups like "Can you tell me more?" or "Tell me more about that." Instead, ask a SPECIFIC follow-up that references what they just said. For example, if they mention a team of 8 people, ask "Are all 8 focused on the same thing, or is there a split in roles?" Always direct them based on what they shared.
+HARD RULES — VIOLATING ANY OF THESE IS FAILURE:
+1. ONE question per response max. Never stack questions with "and."
+2. 2-4 sentences max. Shorter is almost always better.
+3. NEVER mention workshop, 100x, Nik Shah, or price before OWNERSHIP phase.
+4. NEVER give advice or recommendations before OWNERSHIP phase. Only questions.
+5. NO hype words: guaranteed, revolutionary, game-changing, cutting-edge, transform, unlock, skyrocket, supercharge, unleash, incredible, amazing, powerful.
+6. Use "feel" not "think" for commitment questions.
+7. Use "..." for emphasis in later phases (Consequence, Ownership, Commitment).
+8. ALWAYS reference specific things the prospect told you. Show you were listening.
+9. If they ask a question, answer briefly (1 sentence) then redirect.
+10. NEVER say forbidden phrases (see list). Just respond directly.
+11. STOP SELLING WHEN THEY SAY YES. Confirm next step, wrap up. Don't keep probing.
+12. If a prospect gives a SHORT answer, acknowledge it and ask a SMARTER follow-up that helps them go deeper. Don't just accept "yeah" and move on.
+13. Never repeat a question. Try a completely different angle.
+14. No filler phrases: "I understand," "That makes sense," "Absolutely."
+15. NEVER use generic "Tell me more." Always reference THEIR specific situation.
+16. NEVER use em dashes or semicolons. Write like a human texts.
 """
 
 # Words that should never appear in Sally's responses
@@ -115,6 +134,10 @@ FORBIDDEN_PHRASES = [
     "i appreciate you sharing",
     "absolutely",
     "i completely understand",
+    "that's completely understandable",
+    "that makes total sense",
+    "that makes a lot of sense",
+    "i hear you",
 ]
 
 
@@ -131,9 +154,12 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
 
     Returns the original response if clean, or a safe fallback if violated.
     """
+    # Check 0: Strip em dashes and semicolons (AI writing tells)
+    response_text = response_text.replace(" — ", ", ").replace("—", ", ").replace(" ; ", ". ").replace(";", ".")
+
     text_lower = response_text.lower()
 
-    # Check 1: Multiple questions (skip for closing — links contain no questions but other text might)
+    # Check 1: Multiple questions (skip for closing, links contain no questions but other text might)
     if not is_closing:
         question_marks = response_text.count("?")
         if question_marks > 1:
@@ -146,7 +172,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
     for word in FORBIDDEN_WORDS:
         if word in text_lower:
             logger.warning(f"Circuit breaker: forbidden word '{word}' detected")
-            return "Tell me more about how that's been affecting your day-to-day?"
+            return "How has that been playing out for you day-to-day?"
 
     # Check 3: Forbidden phrases
     for phrase in FORBIDDEN_PHRASES:
@@ -225,13 +251,47 @@ EXAMPLE QUESTION PATTERNS (adapt these, don't copy verbatim):
     # Add objection context if present
     objection_instructions = ""
     if decision.objection_context:
-        objection_instructions = f"""
-OBJECTION CONTEXT: The prospect just raised an objection: {decision.objection_context}
+        # Determine objection type for routing
+        objection_upper = decision.objection_context.upper() if decision.objection_context else ""
 
-You need to:
-1. Acknowledge their concern warmly (e.g., "That's completely understandable...")
-2. Gently redirect back to the phase objective
-3. Do NOT argue with the objection — work around it
+        if "PRICE" in objection_upper:
+            objection_instructions = f"""
+OBJECTION: PRICE — The prospect thinks it's too expensive: {decision.objection_context}
+
+Handle by returning to the cost of NOT doing it. Reference what they told you earlier about their losses, costs, or risks.
+Say something like: "I get it, $10,000 is real money. But you told me [their cost of inaction]. How much is that costing you every month you wait?"
+Keep it brief. One question. Don't be pushy. If they still say no, offer the free workshop.
+"""
+        elif "TIMING" in objection_upper:
+            objection_instructions = f"""
+OBJECTION: TIMING — The prospect wants to wait: {decision.objection_context}
+
+Handle by reminding them what happens if they wait. Reference their own words about the problem getting worse.
+Say something like: "I hear you. But you mentioned [their problem]. If you wait another 6 months, what does that look like?"
+Keep it brief. One question. If they still say no, offer the free workshop.
+"""
+        elif "AUTHORITY" in objection_upper:
+            objection_instructions = f"""
+OBJECTION: AUTHORITY — The prospect needs someone else's buy-in: {decision.objection_context}
+
+Don't fight this. Clarify the decision process and offer to include the other person.
+Say something like: "Totally makes sense. Who else would need to weigh in on this?"
+One question. Keep it moving.
+"""
+        elif "NEED" in objection_upper:
+            objection_instructions = f"""
+OBJECTION: NEED — The prospect isn't sure they need this: {decision.objection_context}
+
+Handle by returning to their desired state and the gap. Reference what they said they wanted.
+Say something like: "You mentioned wanting [their desired state]. Right now you're at [current state]. This workshop is built to close that gap."
+Keep it brief. One question. If they still say no, offer the free workshop.
+"""
+        else:
+            objection_instructions = f"""
+OBJECTION CONTEXT: {decision.objection_context}
+
+Acknowledge briefly and redirect. Don't argue. Keep it to one question.
+If they've objected multiple times, offer the free online AI Discovery Workshop as a low-commitment alternative.
 """
 
     # Add Break Glass instructions
@@ -255,20 +315,12 @@ Make this transition SMOOTH and NATURAL. Don't say "Now let's move to the next t
 Instead, bridge from what they just said into your next question.
 """
 
-    # Add end instructions — NO links in chat text (the UI has a Book & Pay button)
-    end_instructions = ""
-    if decision.action == "END":
-        end_instructions = """
-SESSION ENDING: Wrap up the conversation gracefully.
-Thank them for their time, briefly reference what you discussed, and let them know next steps will appear on screen.
-Say something like: "I'll have the booking and payment details pop up for you right now."
-Do NOT paste any URLs or links in your response — the system handles that automatically.
-If they clearly said no or aren't interested, be warm, leave the door open, and end gracefully.
-"""
-
-    # Add contact collection instructions — email first, then phone, NO links
+    # Add contact collection instructions — email first, then phone, then send links
+    tidycal_path = os.getenv("TIDYCAL_PATH", "")
     contact_instructions = ""
-    if target_phase == NepqPhase.COMMITMENT:
+    # Check contact instructions for both COMMITMENT and TERMINATED (closing with contact info)
+    closing_phases = {NepqPhase.COMMITMENT, NepqPhase.TERMINATED}
+    if target_phase in closing_phases:
         profile_dict_check = profile.model_dump()
         needs_email = not profile_dict_check.get("email")
         needs_phone = not profile_dict_check.get("phone")
@@ -276,21 +328,57 @@ If they clearly said no or aren't interested, be warm, leave the door open, and 
         if needs_email:
             contact_instructions = """
 CONTACT COLLECTION: The prospect has agreed. Now collect their email FIRST.
-Ask naturally: "That's great to hear! What's the best email to send the details over to?"
-Do NOT ask for phone yet — just email this turn.
-Do NOT include any URLs or links.
+Ask naturally: "Great! What's the best email to send the details to?"
+Do NOT ask for phone yet. Just email this turn.
+Do NOT include any URLs or links yet.
 """
         elif needs_phone:
             contact_instructions = """
 CONTACT COLLECTION: You have their email. Now get their phone number.
-Ask naturally: "And what's the best number to reach you at for scheduling?"
-Do NOT include any URLs or links.
+Ask naturally: "And what's the best number to reach you at?"
+Do NOT include any URLs or links yet.
 """
         else:
-            contact_instructions = """
-CLOSING: You have their email and phone. Confirm next steps and close warmly.
-Say something like: "I'll send the details to [their email] and our team will reach out at [their phone]. The booking and payment info will pop up for you right now — really enjoyed our conversation, [name]!"
-Do NOT include any URLs or links — the system shows a Book & Pay button automatically.
+            # Determine if they chose the free workshop based on conversation context
+            recent_msgs = [m.get("content", "").lower() for m in conversation_history[-8:]]
+            chose_free = any(
+                ("free" in msg and ("workshop" in msg or "link" in msg or "sign up" in msg or "sound" in msg))
+                for msg in recent_msgs
+            )
+
+            if chose_free and tidycal_path:
+                contact_instructions = f"""
+CLOSING: You have their email and phone. They chose the FREE workshop.
+You MUST include this EXACT booking link in your response: https://tidycal.com/{tidycal_path}
+
+Your response MUST look something like:
+"Here's the link to book your free workshop: https://tidycal.com/{tidycal_path}
+
+Looking forward to having you join! [warm closing referencing their name]"
+
+This is CRITICAL. The link MUST appear in your response text.
+"""
+            else:
+                contact_instructions = f"""
+CLOSING: You have their email and phone. They chose the PAID workshop ($10,000).
+You MUST include the exact text [PAYMENT_LINK] in your response. Do NOT skip this.
+
+Your response MUST look something like:
+"Here's the link to secure your spot: [PAYMENT_LINK]
+
+Looking forward to getting this started! [warm closing]"
+
+The [PAYMENT_LINK] text gets automatically replaced with the real Stripe payment URL.
+This is CRITICAL. Your response MUST contain [PAYMENT_LINK] somewhere.
+"""
+
+    # Add end instructions only when session is ending WITHOUT contact/link instructions
+    end_instructions = ""
+    if decision.action == "END" and not contact_instructions:
+        end_instructions = """
+SESSION ENDING: Wrap up the conversation gracefully.
+Thank them for their time and briefly reference what you discussed.
+If they clearly said no or aren't interested, be warm, leave the door open, and end gracefully.
 """
 
     # Fact Sheet RAG — constrain Sally to verified facts only
@@ -329,11 +417,14 @@ MANAGER'S DECISION: {decision.action} — {decision.reason}
 
 Now generate Sally's response. Remember:
 - ONE question max
-- 2-4 sentences, no more
-- Natural, warm, conversational
-- Reference their specific situation when possible
-- No hype words, no corporate speak
-- No advice or recommendations before Ownership phase
+- 2-4 sentences. Shorter is almost always better.
+- Sound like a real human texting, not an AI chatbot
+- ALWAYS reference something specific the prospect said. Show you were listening.
+- If they gave a vague or short answer, ask a smarter follow-up that helps them go deeper
+- If they gave a clear, complete answer, acknowledge it and move forward
+- No hype words, no corporate speak, no em dashes, no semicolons
+- No advice before Ownership phase
+- Be empathetic, intuitive, and human
 
 Sally's response:"""
 
@@ -358,9 +449,9 @@ def generate_response(
     # Special case: greeting (no conversation history yet)
     if not conversation_history:
         return (
-            "Hi there! I'm Sally from 100x. Thanks for taking the time to chat today. "
-            "I'd love to learn more about you and what brings you here. "
-            "What's your role, and what got you interested in exploring AI solutions?"
+            "Hey! I'm Sally from 100x. "
+            "I'd love to learn a bit about you. "
+            "What do you do, and what got you curious about AI?"
         )
 
     prompt = build_response_prompt(

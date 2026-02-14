@@ -46,9 +46,9 @@ class SallyEngine:
     @staticmethod
     def get_greeting() -> str:
         return (
-            "Hi there! I'm Sally from 100x. Thanks for taking the time to chat today. "
-            "I'd love to learn more about you and what brings you here. "
-            "What's your role, and what got you interested in exploring AI solutions?"
+            "Hey! I'm Sally from 100x. "
+            "I'd love to learn a bit about you. "
+            "What do you do, and what got you curious about AI?"
         )
 
     @staticmethod

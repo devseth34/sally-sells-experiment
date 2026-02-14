@@ -21,6 +21,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 import os
+import stripe
 from .database import get_db, DBSession, DBMessage, init_db
 from .schemas import (
     NepqPhase,
@@ -36,6 +37,7 @@ from .schemas import (
     PostConvictionResponse,
 )
 from .agent import SallyEngine
+from .sheets_logger import fire_sheets_log
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sally.api")
@@ -59,6 +61,46 @@ def on_startup():
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Sally Sells API", "version": "2.0.0", "engine": "three-layer-nepq"}
+
+
+# --- Sheets Logging Helper ---
+
+def _serialize_for_sheets(db_session, db, extra_user_msg: dict | None = None) -> tuple[dict, list[dict]]:
+    """Serialize session + messages into plain dicts for the sheets logger thread."""
+    try:
+        profile = json.loads(db_session.prospect_profile or "{}")
+    except json.JSONDecodeError:
+        profile = {}
+
+    session_data = {
+        "id": db_session.id,
+        "status": db_session.status,
+        "current_phase": db_session.current_phase,
+        "pre_conviction": db_session.pre_conviction,
+        "post_conviction": db_session.post_conviction,
+        "cds_score": db_session.cds_score,
+        "message_count": db_session.message_count,
+        "turn_number": db_session.turn_number,
+        "start_time": db_session.start_time,
+        "end_time": db_session.end_time,
+        "escalation_sent": db_session.escalation_sent,
+        "prospect_profile": profile,
+    }
+
+    all_msgs = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == db_session.id)
+        .order_by(DBMessage.timestamp)
+        .all()
+    )
+    messages_data = [
+        {"role": m.role, "content": m.content, "phase": m.phase, "timestamp": m.timestamp}
+        for m in all_msgs
+    ]
+    if extra_user_msg:
+        messages_data.append(extra_user_msg)
+
+    return session_data, messages_data
 
 
 # --- Session Management ---
@@ -166,7 +208,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
         result = {
-            "response_text": "I appreciate you sharing that. Could you tell me a bit more?",
+            "response_text": "Hmm, tell me more about that.",
             "new_phase": current_phase.value,
             "new_profile_json": db_session.prospect_profile or "{}",
             "thought_log_json": json.dumps({"error": str(e)}),
@@ -198,6 +240,16 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         db_session.status = "completed"
         db_session.end_time = time.time()
 
+        # Google Sheets: log completed session
+        try:
+            _sd, _md = _serialize_for_sheets(
+                db_session, db,
+                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value, "timestamp": now},
+            )
+            fire_sheets_log("session", _sd, _md)
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Sheets log (completed) error: {e}")
+
     # Gmail escalation: trigger when entering OWNERSHIP (first time only)
     if new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
         try:
@@ -218,8 +270,46 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             sent = _send_escalation_email(session_id, profile_for_email, transcript_text)
             if sent:
                 db_session.escalation_sent = time.time()
+
+            # Google Sheets: log hot lead
+            _sd, _md = _serialize_for_sheets(
+                db_session, db,
+                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value, "timestamp": now},
+            )
+            fire_sheets_log("hot_lead", _sd, _md)
         except Exception as e:
             logger.error(f"[Session {session_id}] Escalation trigger error: {e}")
+
+    # Replace [PAYMENT_LINK] placeholder with real Stripe checkout URL if present
+    response_text = result["response_text"]
+    if "[PAYMENT_LINK]" in response_text:
+        try:
+            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+            if stripe.api_key:
+                price_id = _get_or_create_stripe_price()
+                profile_for_checkout = json.loads(db_session.prospect_profile or "{}")
+                metadata = {
+                    "sally_session_id": session_id,
+                    "prospect_name": profile_for_checkout.get("name", ""),
+                    "prospect_company": profile_for_checkout.get("company", ""),
+                    "prospect_role": profile_for_checkout.get("role", ""),
+                }
+                prospect_email = profile_for_checkout.get("email")
+                frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+                checkout_params = {
+                    "mode": "payment",
+                    "line_items": [{"price": price_id, "quantity": 1}],
+                    "success_url": f"{frontend_url}/booking/{session_id}?payment=success&checkout_session_id={{CHECKOUT_SESSION_ID}}",
+                    "cancel_url": f"{frontend_url}/booking/{session_id}?payment=cancelled",
+                    "metadata": metadata,
+                }
+                if prospect_email:
+                    checkout_params["customer_email"] = prospect_email
+                checkout_session = stripe.checkout.Session.create(**checkout_params)
+                response_text = response_text.replace("[PAYMENT_LINK]", checkout_session.url)
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Failed to create checkout for inline link: {e}")
+            response_text = response_text.replace("[PAYMENT_LINK]", os.getenv("STRIPE_PAYMENT_LINK", ""))
 
     # Save assistant message
     assistant_msg_id = str(uuid.uuid4())
@@ -227,7 +317,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         id=assistant_msg_id,
         session_id=session_id,
         role="assistant",
-        content=result["response_text"],
+        content=response_text,
         timestamp=time.time(),
         phase=new_phase.value,
     )
@@ -249,7 +339,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         assistant_message=MessageResponse(
             id=assistant_msg_id,
             role="assistant",
-            content=result["response_text"],
+            content=response_text,
             timestamp=assistant_msg.timestamp,
             phase=new_phase.value,
         ),
@@ -382,6 +472,14 @@ def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
         db_session.status = "abandoned"
         db_session.end_time = time.time()
         db.commit()
+
+        # Google Sheets: log abandoned session
+        try:
+            _sd, _md = _serialize_for_sheets(db_session, db)
+            fire_sheets_log("session", _sd, _md)
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Sheets log (abandoned) error: {e}")
+
     return {"status": "ok"}
 
 
@@ -414,14 +512,151 @@ def get_thought_logs(session_id: str, db: DBSessionType = Depends(get_db)):
     }
 
 
-# --- Config (Stripe + Calendly URLs) ---
+# --- Config (Stripe + TidyCal) ---
 
 @app.get("/api/config")
 def get_config():
-    """Return client-safe config (Stripe Payment Link + Calendly URL)."""
+    """Return client-safe config (Stripe keys + TidyCal path)."""
     return {
         "stripe_payment_link": os.getenv("STRIPE_PAYMENT_LINK", ""),
-        "calendly_url": os.getenv("CALENDLY_URL", ""),
+        "stripe_publishable_key": os.getenv("STRIPE_PUBLISHABLE_KEY", ""),
+        "tidycal_path": os.getenv("TIDYCAL_PATH", ""),
+    }
+
+
+# --- Stripe Checkout ---
+
+# Lazy-init: create Stripe product/price on first checkout
+_stripe_price_id: str | None = None
+
+
+def _get_or_create_stripe_price() -> str:
+    """Get or create the $10,000 Discovery Workshop price in Stripe."""
+    global _stripe_price_id
+    if _stripe_price_id:
+        return _stripe_price_id
+
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    if not stripe.api_key:
+        raise RuntimeError("STRIPE_SECRET_KEY not set")
+
+    # Search for existing product by name
+    products = stripe.Product.search(query='name~"100x AI Discovery Workshop"', limit=1)
+    if products.data:
+        product = products.data[0]
+        # Get the default price or first active price
+        prices = stripe.Price.list(product=product.id, active=True, limit=1)
+        if prices.data:
+            _stripe_price_id = prices.data[0].id
+            logger.info(f"Stripe: using existing price {_stripe_price_id}")
+            return _stripe_price_id
+
+    # Create product + price
+    product = stripe.Product.create(
+        name="100x AI Discovery Workshop",
+        description="Nik Shah, CEO of 100x, comes onsite to build a customized AI plan helping you save $5M annually.",
+    )
+    price = stripe.Price.create(
+        product=product.id,
+        unit_amount=1000000,  # $10,000 in cents
+        currency="usd",
+    )
+    _stripe_price_id = price.id
+    logger.info(f"Stripe: created product {product.id} with price {price.id}")
+    return _stripe_price_id
+
+
+@app.post("/api/checkout")
+def create_checkout_session(
+    session_id: str | None = None,
+    db: DBSessionType = Depends(get_db),
+):
+    """Create a Stripe Checkout Session for the $10,000 Discovery Workshop."""
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    price_id = _get_or_create_stripe_price()
+
+    # Build metadata from the Sally session if available
+    metadata = {}
+    prospect_email = None
+    if session_id:
+        db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+        if db_session:
+            try:
+                profile = json.loads(db_session.prospect_profile or "{}")
+                metadata = {
+                    "sally_session_id": session_id,
+                    "prospect_name": profile.get("name", ""),
+                    "prospect_company": profile.get("company", ""),
+                    "prospect_role": profile.get("role", ""),
+                }
+                prospect_email = profile.get("email")
+            except json.JSONDecodeError:
+                metadata = {"sally_session_id": session_id}
+
+    # Determine success/cancel URLs
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+    checkout_params = {
+        "mode": "payment",
+        "line_items": [{"price": price_id, "quantity": 1}],
+        "success_url": f"{frontend_url}/booking/{session_id or 'direct'}?payment=success&checkout_session_id={{CHECKOUT_SESSION_ID}}",
+        "cancel_url": f"{frontend_url}/booking/{session_id or 'direct'}?payment=cancelled",
+        "metadata": metadata,
+    }
+
+    if prospect_email:
+        checkout_params["customer_email"] = prospect_email
+
+    checkout_session = stripe.checkout.Session.create(**checkout_params)
+
+    return {
+        "checkout_url": checkout_session.url,
+        "session_id": checkout_session.id,
+    }
+
+
+@app.get("/api/checkout/verify/{checkout_session_id}")
+def verify_payment(checkout_session_id: str):
+    """Verify a Stripe Checkout Session payment status."""
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    try:
+        session = stripe.checkout.Session.retrieve(checkout_session_id)
+    except stripe.InvalidRequestError:
+        raise HTTPException(status_code=404, detail="Checkout session not found")
+
+    metadata = dict(session.metadata) if session.metadata else {}
+    customer_email = session.customer_details.email if session.customer_details else None
+
+    # Log conversion to Google Sheets when payment is confirmed
+    if session.payment_status == "paid":
+        try:
+            fire_sheets_log("conversion", {
+                "sally_session_id": metadata.get("sally_session_id", ""),
+                "checkout_session_id": checkout_session_id,
+                "payment_status": "paid",
+                "amount": f"${session.amount_total / 100:,.0f}" if session.amount_total else "",
+                "currency": (session.currency or "").upper(),
+                "customer_email": customer_email or "",
+                "prospect_name": metadata.get("prospect_name", ""),
+                "prospect_company": metadata.get("prospect_company", ""),
+                "prospect_role": metadata.get("prospect_role", ""),
+            })
+        except Exception as e:
+            logger.error(f"Sheets conversion log error: {e}")
+
+    return {
+        "payment_status": session.payment_status,
+        "status": session.status,
+        "customer_email": customer_email,
+        "amount_total": session.amount_total,
+        "currency": session.currency,
+        "metadata": metadata,
     }
 
 

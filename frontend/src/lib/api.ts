@@ -103,12 +103,42 @@ export async function endSession(sessionId: string): Promise<void> {
 
 export interface AppConfig {
   stripe_payment_link: string;
-  calendly_url: string;
+  stripe_publishable_key: string;
+  tidycal_path: string;
 }
 
 export async function getConfig(): Promise<AppConfig> {
   const res = await fetch(`${API_BASE}/config`);
   if (!res.ok) throw new Error(`Failed to get config: ${res.statusText}`);
+  return res.json();
+}
+
+export interface CheckoutResponse {
+  checkout_url: string;
+  session_id: string;
+}
+
+export async function createCheckoutSession(sessionId?: string): Promise<CheckoutResponse> {
+  const url = sessionId
+    ? `${API_BASE}/checkout?session_id=${sessionId}`
+    : `${API_BASE}/checkout`;
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to create checkout: ${res.statusText}`);
+  return res.json();
+}
+
+export interface PaymentVerification {
+  payment_status: string;
+  status: string;
+  customer_email: string | null;
+  amount_total: number;
+  currency: string;
+  metadata: Record<string, string>;
+}
+
+export async function verifyPayment(checkoutSessionId: string): Promise<PaymentVerification> {
+  const res = await fetch(`${API_BASE}/checkout/verify/${checkoutSessionId}`);
+  if (!res.ok) throw new Error(`Failed to verify payment: ${res.statusText}`);
   return res.json();
 }
 

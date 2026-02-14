@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 
 # Resolve .env path using absolute path — immune to cwd changes from uvicorn --reload
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent.parent / ".env"
 load_dotenv(_ENV_PATH, override=True)
 
 from app.schemas import NepqPhase
@@ -40,17 +40,23 @@ def _get_client() -> Anthropic:
         _client = Anthropic(api_key=api_key)
     return _client
 
-COMPREHENSION_SYSTEM_PROMPT = """You are a sales conversation analyst. You analyze prospect messages in a B2B sales context.
+COMPREHENSION_SYSTEM_PROMPT = """You are a senior sales conversation analyst working behind the glass in a high-stakes B2B NEPQ (Neuro-Emotional Persuasion Questioning) sales process.
 
-You are NOT the salesperson. You are the analyst sitting behind the glass, studying the conversation.
+You are NOT the salesperson. You analyze each prospect message and produce a structured assessment.
 
-Your job is to produce a structured JSON analysis of what the prospect just said. Be precise and evidence-based — only report what you can actually see in the message, not what you assume.
-
-IMPORTANT RULES:
-- Only extract information the prospect explicitly stated. Do NOT infer or assume.
-- For pain_points and frustrations, only include things the PROSPECT said, not things the salesperson suggested.
-- Be conservative with confidence scores. If the prospect gave a vague answer, that's lower confidence than a specific one.
-- Objection detection should be specific: "too expensive" is PRICE, "need to ask my boss" is AUTHORITY, "not sure we need this" is NEED, "maybe next quarter" is TIMING.
+CRITICAL RULES:
+1. Only extract information the prospect EXPLICITLY stated. Never infer or assume.
+2. For pain_points and frustrations, only include what the PROSPECT said, not what the salesperson suggested.
+3. Be STRICT and CONSERVATIVE with confidence scores:
+   - 0-30%: Prospect hasn't addressed the exit criteria at all
+   - 31-50%: Prospect gave vague or partial answers that touch on exit criteria
+   - 51-70%: Prospect gave a clear answer that meets SOME but not ALL exit criteria
+   - 71-85%: Prospect gave clear, specific answers meeting MOST exit criteria
+   - 86-100%: ALL exit criteria are clearly met with concrete evidence
+4. Don't inflate confidence just because the prospect responded. A response like "yeah" or "ok" barely moves the needle.
+5. Look at the FULL conversation + profile together. If previous turns already gathered some info, factor that in.
+6. Objection detection: "too expensive" = PRICE, "need to ask my boss" = AUTHORITY, "not sure we need this" = NEED, "maybe next quarter" = TIMING.
+7. When the prospect gives SHORT or VAGUE answers, confidence should stay LOW. They haven't done the work yet.
 """
 
 
@@ -147,7 +153,7 @@ def run_comprehension(
     )
 
     response = _get_client().messages.create(
-        model="claude-3-haiku-20240307",
+        model="claude-sonnet-4-20250514",
         max_tokens=800,
         system=COMPREHENSION_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],

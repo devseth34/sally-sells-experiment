@@ -150,16 +150,16 @@ export function ChatPage() {
               )}
               <span
                 className={`text-xs font-mono ${
-                  seconds > 540
+                  seconds > 1700
                     ? "text-red-400"
-                    : seconds > 480
+                    : seconds > 1500
                     ? "text-amber-400"
                     : "text-zinc-500"
                 }`}
               >
                 {formatTime(seconds)}
               </span>
-              {seconds > 540 && (
+              {seconds > 1700 && (
                 <span className="text-[10px] text-red-400">Time limit</span>
               )}
             </div>
@@ -182,6 +182,7 @@ export function ChatPage() {
           <ChatInput
             onSend={handleSendMessage}
             disabled={isLoading || sessionEnded}
+            sessionEnded={sessionEnded}
           />
 
           {sessionEnded && !showPostModal && (

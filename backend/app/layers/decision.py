@@ -35,7 +35,7 @@ PHASE_ORDER = [
     NepqPhase.COMMITMENT,
 ]
 
-# Objection -> Phase routing map
+# Objection -> Phase routing map (used for early phases only)
 OBJECTION_ROUTING = {
     ObjectionType.PRICE: NepqPhase.CONSEQUENCE,
     ObjectionType.TIMING: NepqPhase.PROBLEM_AWARENESS,
@@ -43,7 +43,12 @@ OBJECTION_ROUTING = {
     # AUTHORITY stays in current phase (handled differently)
 }
 
-# Late phases where rerouting kills the sale
+# Late phases where objections are handled IN-PHASE (never reroute backward)
+# In OWNERSHIP: Sally handles objections directly using the objection routing patterns
+# PRICE -> "Remember what you said about the cost of NOT doing this?"
+# TIMING -> "What happens if you wait? You told me..."
+# NEED -> "You mentioned wanting X. This is how we get there."
+# AUTHORITY -> "Who else needs to be involved?"
 LATE_PHASES = {NepqPhase.OWNERSHIP, NepqPhase.COMMITMENT}
 
 
@@ -103,13 +108,13 @@ def make_decision(
     """
     import time
 
-    # 1. Session time limit (15 minutes)
+    # 1. Session time limit (30 minutes)
     elapsed_seconds = time.time() - conversation_start_time
-    if elapsed_seconds > 900:
+    if elapsed_seconds > 1800:
         return DecisionOutput(
             action="END",
             target_phase=current_phase.value,
-            reason=f"Session exceeded 15-minute limit ({elapsed_seconds:.0f}s elapsed)",
+            reason=f"Session exceeded 30-minute limit ({elapsed_seconds:.0f}s elapsed)",
             retry_count=retry_count,
         )
 
@@ -238,20 +243,31 @@ def make_decision(
     # 6. Break Glass check
     max_retries = get_max_retries(current_phase)
     if retry_count >= max_retries:
-        if confidence >= threshold * 0.6:
+        # Only force-advance if we're reasonably close to the threshold (75%+)
+        # This prevents premature advancement when we haven't gathered enough info
+        if confidence >= threshold * 0.75:
             next_phase = get_next_phase(current_phase)
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,
-                reason=f"Break Glass: {retry_count} retries exceeded max {max_retries}. Confidence {confidence}% is above minimum {int(threshold * 0.6)}%. Force-advancing.",
+                reason=f"Break Glass: {retry_count} retries exceeded max {max_retries}. Confidence {confidence}% is above minimum {int(threshold * 0.75)}%. Force-advancing.",
+                retry_count=0,
+            )
+        elif retry_count >= max_retries + 2:
+            # Hard ceiling: if we're WAY over retries, force-advance anyway to prevent infinite loops
+            next_phase = get_next_phase(current_phase)
+            return DecisionOutput(
+                action="ADVANCE",
+                target_phase=next_phase.value,
+                reason=f"Hard ceiling: {retry_count} retries, well past max {max_retries}. Force-advancing to prevent stall.",
                 retry_count=0,
             )
         else:
             return DecisionOutput(
                 action="BREAK_GLASS",
                 target_phase=current_phase.value,
-                reason=f"Break Glass: {retry_count} retries, confidence only {confidence}%. Trying a different angle.",
-                retry_count=retry_count,
+                reason=f"Break Glass: {retry_count} retries, confidence only {confidence}% (need {int(threshold * 0.75)}% min). Trying a different angle.",
+                retry_count=retry_count + 1,
             )
 
     # 7. Default: Stay in current phase
