@@ -17,7 +17,7 @@ from app.schemas import NepqPhase
 
 PHASE_DEFINITIONS = {
     NepqPhase.CONNECTION: {
-        "purpose": "Build rapport and understand who they are. Get their role, company context, and why they're here. 2-3 turns is fine.",
+        "purpose": "Build rapport and understand who they are. Get their role, company context, and why they're here. Be warm, curious, and mirror everything they say. 2-3 turns is fine.",
         "exit_criteria": [
             "Prospect has shared their role or job title",
             "Prospect has shared what their company does or their industry",
@@ -27,20 +27,22 @@ PHASE_DEFINITIONS = {
         "sally_objectives": [
             "Learn the prospect's name, role, and company",
             "Understand what brought them to explore AI",
-            "Build warm rapport but don't waste time on small talk",
+            "MIRROR their language. If they say 'into AI,' say 'Into AI' back before your question",
+            "Be genuinely warm and curious. React to what they share with energy",
             "If they give you role + company + reason in one message, that's enough to move on",
+            "If they give a short answer, mirror it and ask something specific and interesting",
         ],
         "extraction_targets": ["name", "role", "company", "industry"],
         "max_retries": 3,
         "question_patterns": [
-            "What do you do, and what got you curious about AI?",
-            "Tell me a bit about your company. What space are you in?",
-            "What sparked the interest in looking at AI right now?",
+            "What do you do, and what brought you here today?",
+            "[Mirror their answer] Oh nice! What kind of [their area]?",
+            "[Mirror] What side of AI are you most curious about?",
         ],
     },
 
     NepqPhase.SITUATION: {
-        "purpose": "Map their current operations. Understand what they do day-to-day so you can ask smart problem questions. 2-3 turns.",
+        "purpose": "Map their current operations. Understand what they do day-to-day so you can ask smart problem questions. Mirror everything. 2-3 turns.",
         "exit_criteria": [
             "Prospect has described their current workflow, process, or day-to-day work",
             "Prospect has mentioned something concrete: team size, tools, processes, or specific tasks",
@@ -48,22 +50,22 @@ PHASE_DEFINITIONS = {
         ],
         "confidence_threshold": 65,
         "sally_objectives": [
+            "MIRROR their language before asking follow-ups",
             "Get a clear picture of their daily operations",
-            "Understand team structure, tools, or processes they use",
-            "Ask follow-ups that reference what they just told you",
-            "Don't accept vague answers. Push gently for specifics: 'Walk me through what that looks like day to day'",
+            "Show genuine interest in their work. React authentically.",
+            "Don't accept vague answers. Push gently for specifics using their own words",
         ],
         "extraction_targets": ["current_state", "team_size", "tools_mentioned"],
         "max_retries": 3,
         "question_patterns": [
-            "Walk me through what a typical week looks like for you in terms of [their area].",
-            "How does your team currently handle [their process]?",
-            "What tools or systems are you using for that right now?",
+            "[Mirror] That sounds like a lot. Walk me through what a typical week looks like for you.",
+            "[Mirror their work] How many people on your team are handling that?",
+            "[Mirror] What are you using to manage all of that right now?",
         ],
     },
 
     NepqPhase.PROBLEM_AWARENESS: {
-        "purpose": "Surface a REAL pain point that the prospect states in their own words. This is the emotional core of NEPQ. Don't rush it. 2-3 turns.",
+        "purpose": "Surface a REAL pain point that the prospect states in their own words. Mirror their language, validate the emotion, and let them feel it. 2-3 turns.",
         "exit_criteria": [
             "Prospect has articulated at least one SPECIFIC pain point or frustration in their own words",
             "The pain is real and current, not hypothetical",
@@ -71,18 +73,18 @@ PHASE_DEFINITIONS = {
         ],
         "confidence_threshold": 65,
         "sally_objectives": [
+            "MIRROR their words. If they say 'it takes forever,' say 'Takes forever...' before your question",
             "Help the prospect discover and articulate their pain themselves",
-            "Ask questions that connect to THEIR specific situation, not generic ones",
-            "Use what you learned in Situation to ask targeted questions: 'You mentioned your team of 6 handles X manually. How has that been scaling?'",
-            "Let them feel the frustration. Don't rush past it.",
+            "Use what you learned in Situation: 'You mentioned [their exact words]. What's the hardest part about that?'",
+            "When they express frustration, sit with it. Don't rush to fix it. 'That sounds exhausting' is better than jumping to the next question.",
             "Once they name a real, specific pain, you can move on. Don't over-dig.",
         ],
         "extraction_targets": ["pain_points", "frustrations"],
         "max_retries": 4,
         "question_patterns": [
-            "You mentioned [specific thing from Situation]. What's the hardest part about that?",
-            "When things go wrong with [their process], what does that look like?",
-            "What's the most frustrating part of your day right now?",
+            "[Mirror their situation] That sounds like a lot. What's the hardest part about that?",
+            "You said [their exact words]. When that happens, what does it actually cost you?",
+            "[Mirror] How long has it been like that?",
         ],
     },
 
