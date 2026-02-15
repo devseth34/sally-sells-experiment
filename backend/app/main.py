@@ -38,6 +38,8 @@ from .schemas import (
 )
 from .agent import SallyEngine
 from .sheets_logger import fire_sheets_log
+from .quality_scorer import score_conversation
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sally.api")
@@ -204,6 +206,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             retry_count=db_session.retry_count,
             turn_number=db_session.turn_number,
             conversation_start_time=db_session.start_time,
+            consecutive_no_new_info=getattr(db_session, 'consecutive_no_new_info', 0) or 0,
         )
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
@@ -215,6 +218,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             "phase_changed": False,
             "session_ended": False,
             "retry_count": db_session.retry_count + 1,
+            "consecutive_no_new_info": getattr(db_session, 'consecutive_no_new_info', 0) or 0,
         }
 
     # Update session state
@@ -222,6 +226,9 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     db_session.current_phase = new_phase.value
     db_session.retry_count = result["retry_count"]
     db_session.prospect_profile = result["new_profile_json"]
+    # Track repetition detection counter
+    if hasattr(db_session, 'consecutive_no_new_info'):
+        db_session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
 
     # Append thought log
     try:
@@ -249,6 +256,54 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             fire_sheets_log("session", _sd, _md)
         except Exception as e:
             logger.error(f"[Session {session_id}] Sheets log (completed) error: {e}")
+
+        # Async quality scoring (fire-and-forget via daemon thread)
+        try:
+            # Snapshot data for the scorer thread (avoid DB session sharing across threads)
+            all_msgs_for_scoring = [
+                {"role": m.role, "content": m.content, "phase": m.phase}
+                for m in messages
+            ]
+            # Add the current user message (not yet in the DB query result)
+            all_msgs_for_scoring.append({"role": "user", "content": request.content, "phase": current_phase.value})
+            # Add Sally's response (use result dict since response_text variable is defined later)
+            all_msgs_for_scoring.append({"role": "assistant", "content": result["response_text"], "phase": new_phase.value})
+
+            thought_logs_for_scoring = list(existing_logs)  # already parsed above
+            scoring_session_id = session_id
+
+            def _run_quality_scoring():
+                try:
+                    quality_result = score_conversation(all_msgs_for_scoring, thought_logs_for_scoring)
+                    logger.info(f"[Session {scoring_session_id}] Quality score: "
+                                f"mirror={quality_result.mirroring_score}, "
+                                f"energy={quality_result.energy_matching_score}, "
+                                f"structure={quality_result.structure_score}, "
+                                f"arc={quality_result.emotional_arc_score}, "
+                                f"overall={quality_result.overall_score}")
+                    # Store result in DB
+                    from .database import SessionLocal
+                    scoring_db = SessionLocal()
+                    try:
+                        s = scoring_db.query(DBSession).filter(DBSession.id == scoring_session_id).first()
+                        if s:
+                            # Store quality score as JSON in a field (we'll add it to thought_logs for now)
+                            try:
+                                logs = json.loads(s.thought_logs or "[]")
+                            except json.JSONDecodeError:
+                                logs = []
+                            logs.append({"quality_score": quality_result.model_dump()})
+                            s.thought_logs = json.dumps(logs)
+                            scoring_db.commit()
+                    finally:
+                        scoring_db.close()
+                except Exception as e:
+                    logger.error(f"[Session {scoring_session_id}] Quality scoring failed: {e}")
+
+            t = threading.Thread(target=_run_quality_scoring, daemon=True)
+            t.start()
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Quality scoring thread launch failed: {e}")
 
     # Gmail escalation: trigger when entering OWNERSHIP (first time only)
     if new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
@@ -510,6 +565,53 @@ def get_thought_logs(session_id: str, db: DBSessionType = Depends(get_db)):
         "prospect_profile": profile,
         "thought_logs": thought_logs,
     }
+
+
+# --- Quality Scoring (on-demand) ---
+
+@app.post("/api/sessions/{session_id}/quality-score")
+def run_quality_score(session_id: str, db: DBSessionType = Depends(get_db)):
+    """Run or re-run quality scoring for a completed session."""
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if db_session.status not in ("completed", "abandoned"):
+        raise HTTPException(status_code=400, detail="Session must be completed or abandoned to score")
+
+    # Get messages
+    all_messages = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == session_id)
+        .order_by(DBMessage.timestamp)
+        .all()
+    )
+    messages_data = [
+        {"role": m.role, "content": m.content, "phase": m.phase}
+        for m in all_messages
+    ]
+
+    # Get thought logs
+    try:
+        thought_logs = json.loads(db_session.thought_logs or "[]")
+    except json.JSONDecodeError:
+        thought_logs = []
+
+    # Run scoring
+    quality_result = score_conversation(messages_data, thought_logs)
+
+    # Store result
+    try:
+        logs = json.loads(db_session.thought_logs or "[]")
+    except json.JSONDecodeError:
+        logs = []
+
+    # Remove any previous quality_score entries
+    logs = [log for log in logs if not (isinstance(log, dict) and "quality_score" in log)]
+    logs.append({"quality_score": quality_result.model_dump()})
+    db_session.thought_logs = json.dumps(logs)
+    db.commit()
+
+    return quality_result.model_dump()
 
 
 # --- Config (Stripe + TidyCal) ---

@@ -21,11 +21,12 @@ from app.schemas import NepqPhase
 from app.models import (
     ComprehensionOutput,
     PhaseExitEvaluation,
+    CriterionResult,
     ObjectionType,
     UserIntent,
     ProspectProfile,
 )
-from app.phase_definitions import get_phase_definition
+from app.phase_definitions import get_phase_definition, get_exit_criteria_checklist
 
 # Lazy client — created on first use, not at import time
 _client: Anthropic | None = None
@@ -45,31 +46,31 @@ COMPREHENSION_SYSTEM_PROMPT = """You are a senior sales conversation analyst AND
 You are NOT the salesperson. You analyze each prospect message and produce a structured assessment. Your analysis powers the salesperson's ability to mirror, empathize, and respond with genuine emotional intelligence.
 
 YOUR TWO JOBS:
-A) FACTUAL ANALYSIS — Extract what they said (intent, objections, profile data, exit criteria progress)
+A) FACTUAL ANALYSIS — Extract what they said (intent, objections, profile data, exit criteria checklist)
 B) EMOTIONAL INTELLIGENCE — Extract HOW they said it (their exact memorable phrases, emotional signals, energy level, what they need to feel heard)
 
 CRITICAL RULES:
 1. Only extract information the prospect EXPLICITLY stated. Never infer or assume.
 2. For pain_points and frustrations, only include what the PROSPECT said, not what the salesperson suggested.
-3. CONFIDENCE SCORING — assess CUMULATIVELY across the ENTIRE conversation + existing profile:
-   - 0-25%: Prospect hasn't addressed ANY exit criteria yet (first message, off-topic, or pure small talk)
-   - 26-45%: Prospect has addressed ONE exit criterion partially or vaguely
-   - 46-65%: Prospect has addressed at LEAST TWO exit criteria with some substance (even if brief)
-   - 66-80%: Prospect has addressed MOST exit criteria clearly. Short answers count IF they contain real info (e.g. "I'm a dev" = role provided, even if brief)
-   - 81-100%: ALL exit criteria are clearly met with concrete evidence
-4. IMPORTANT: Short answers CAN be high-confidence if they contain real information.
-   "I'm a dev at a fintech startup, looking into AI for automation" in ONE message = role + company context + reason = most CONNECTION criteria MET. That's 66%+ even though it's one sentence.
-   "yeah" or "ok" with no new info = barely moves the needle.
-5. ALWAYS look at the existing profile fields. If the profile already has role, company, etc. from earlier turns, those criteria ARE MET. Don't re-penalize for information already gathered.
-6. Objection detection: "too expensive" = PRICE, "need to ask my boss" = AUTHORITY, "not sure we need this" = NEED, "maybe next quarter" = TIMING.
-7. The goal is ACCURATE assessment, not conservative assessment. Under-scoring is just as bad as over-scoring because it traps the conversation in a loop.
+3. EXIT CRITERIA CHECKLIST — For each criterion, evaluate TRUE or FALSE with evidence:
+   - Mark TRUE only when there is CLEAR evidence from the conversation (current message OR earlier in conversation history OR already in the profile).
+   - Mark FALSE when the criterion has not been addressed or evidence is too vague.
+   - ALWAYS check the existing profile. If role is already filled from a previous turn, the "role_shared" criterion IS met.
+   - Short answers CAN satisfy criteria. "I'm a dev at a fintech startup" satisfies BOTH role_shared AND company_or_industry_shared.
+   - "yeah" or "ok" with no new info satisfies NOTHING new.
+   - Be ACCURATE, not conservative. Marking something false when it's clearly been addressed is just as bad as marking it true prematurely.
+4. NEW INFORMATION DETECTION — Determine if this message contains substantive NEW information:
+   - TRUE: The prospect shared something concrete not already in the profile (new facts, details, emotions, decisions).
+   - FALSE: The message is filler ("yeah", "ok"), repetition of already-known info, or vague non-answers that add nothing new.
+   - This is about whether the CONVERSATION is progressing, not just whether the prospect is talking.
+5. Objection detection: "too expensive" = PRICE, "need to ask my boss" = AUTHORITY, "not sure we need this" = NEED, "maybe next quarter" = TIMING.
 
 EMOTIONAL INTELLIGENCE RULES:
-8. prospect_exact_words: Pick the 2-3 most MEANINGFUL phrases the prospect said that deserve to be mirrored. These are the words that carry emotion, identity, or vulnerability. NOT filler.
+6. prospect_exact_words: Pick the 2-3 most MEANINGFUL phrases the prospect said that deserve to be mirrored. These are the words that carry emotion, identity, or vulnerability. NOT filler.
    - Good: "it takes forever", "we're drowning in spreadsheets", "I'm basically a one-man army"
    - Bad: "yeah", "ok", "sure" (these are filler, not mirrorable)
-9. emotional_cues: Identify SPECIFIC emotional signals with context. Not just "frustrated" but "frustrated about manual work consuming 2 days/week". Connect the emotion to what triggered it.
-10. energy_level: Read their vibe.
+7. emotional_cues: Identify SPECIFIC emotional signals with context. Not just "frustrated" but "frustrated about manual work consuming 2 days/week". Connect the emotion to what triggered it.
+8. energy_level: Read their vibe.
    - "low/flat": short answers, disengaged, monosyllabic
    - "neutral": answering normally, neither excited nor checked out
    - "warm": sharing openly, friendly, engaged
@@ -86,6 +87,7 @@ def build_comprehension_prompt(
     """Build the analysis prompt for Layer 1."""
 
     phase_def = get_phase_definition(current_phase)
+    checklist = get_exit_criteria_checklist(current_phase)
 
     # Format conversation history (last 10 messages for context)
     recent_history = conversation_history[-10:]
@@ -99,13 +101,18 @@ def build_comprehension_prompt(
     # Remove empty lists
     profile_dict = {k: v for k, v in profile_dict.items() if v and v != []}
 
+    # Build checklist section for the prompt
+    checklist_prompt = ""
+    for criterion_id, description in checklist.items():
+        checklist_prompt += f'    "{criterion_id}": {{"met": true/false, "evidence": "<specific evidence or null>"}},\n'
+
     prompt = f"""Analyze the prospect's latest message in this sales conversation.
 
 CURRENT PHASE: {current_phase.value}
 PHASE PURPOSE: {phase_def.get('purpose', 'N/A')}
 
-EXIT CRITERIA FOR THIS PHASE:
-{json.dumps(phase_def.get('exit_criteria', []), indent=2)}
+EXIT CRITERIA CHECKLIST — Evaluate EACH criterion as true/false:
+{json.dumps(checklist, indent=2)}
 
 WHAT WE KNOW ABOUT THE PROSPECT SO FAR:
 {json.dumps(profile_dict, indent=2) if profile_dict else "Nothing yet — this may be early in the conversation."}
@@ -127,11 +134,12 @@ Produce your analysis as a JSON object with this EXACT structure:
         "<field_name>": "<value extracted from this message>"
     }},
     "exit_evaluation": {{
-        "confidence": <0-100>,
-        "reasoning": "<why this confidence level>",
-        "key_evidence": ["<specific things the prospect said>"],
+        "criteria": {{
+{checklist_prompt}        }},
+        "reasoning": "<brief reasoning about overall phase progress>",
         "missing_info": ["<what still needs to be uncovered>"]
     }},
+    "new_information": true/false,
     "prospect_exact_words": ["<2-3 exact phrases from their message worth mirroring back — the words that carry emotion, identity, or vulnerability>"],
     "emotional_cues": ["<specific emotional signals with context, e.g. 'frustrated about manual reporting consuming 2 days/week', 'proud of building the team from scratch'>"],
     "energy_level": "low/flat" | "neutral" | "warm" | "high/excited",
@@ -149,11 +157,18 @@ PROFILE FIELDS YOU CAN UPDATE:
 
 CRITICAL: For list fields (pain_points, frustrations, tools_mentioned, success_metrics), provide ONLY the NEW items to add, not the full list.
 
-IMPORTANT: The exit_evaluation.confidence MUST reflect CUMULATIVE progress across the ENTIRE conversation, not just the latest message.
-- Check each exit criterion against BOTH the existing profile AND the new message
-- If the profile already has "role" filled from a previous turn, that criterion IS met regardless of the current message
-- Count how many exit criteria are satisfied total, then score accordingly
-- A conversation where 2 of 3 exit criteria are already met should score 66%+, even if the latest message only addresses the third
+EXIT CRITERIA EVALUATION RULES:
+- Evaluate CUMULATIVELY across the ENTIRE conversation, not just the latest message.
+- Check each criterion against BOTH the existing profile AND the new message AND the conversation history.
+- If the profile already has "role" filled from a previous turn, "role_shared" IS met (true).
+- Short answers CAN satisfy criteria. "I'm a dev at a fintech" satisfies role AND company criteria.
+- "yeah" or "ok" with no substance satisfies NOTHING new.
+
+NEW INFORMATION RULE:
+- Set "new_information" to true ONLY if this message adds something concrete that wasn't already in the profile.
+- Repeating the same frustration counts as false. Adding a NEW detail about it counts as true.
+- Filler responses ("yeah", "ok", "sure", "makes sense") are false.
+- Emotional deepening (expressing MORE feeling about something already discussed) counts as true IF it reveals something new (e.g., "honestly it keeps me up at night" adds emotional depth even if the topic was known).
 
 Return ONLY the JSON object. No markdown, no explanation."""
 
@@ -197,7 +212,12 @@ def run_comprehension(
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
-        # Fallback: return a safe default
+        # Fallback: return a safe default with empty checklist
+        checklist = get_exit_criteria_checklist(current_phase)
+        default_criteria = {
+            cid: CriterionResult(met=False, evidence=None)
+            for cid in checklist
+        }
         return ComprehensionOutput(
             user_intent=UserIntent.DIRECT_ANSWER,
             emotional_tone="neutral",
@@ -205,19 +225,30 @@ def run_comprehension(
             objection_detail=None,
             profile_updates={},
             exit_evaluation=PhaseExitEvaluation(
-                confidence=30,
+                criteria=default_criteria,
                 reasoning="Failed to parse LLM output",
-                key_evidence=[],
                 missing_info=["Unable to analyze this turn"],
             ),
+            new_information=False,
             summary="Analysis failed — defaulting to safe state",
         )
 
-    # Build the ComprehensionOutput from parsed data
+    # Build checklist criteria from parsed data
+    raw_criteria = data.get("exit_evaluation", {}).get("criteria", {})
+    criteria = {}
+    for cid, cval in raw_criteria.items():
+        if isinstance(cval, dict):
+            criteria[cid] = CriterionResult(
+                met=bool(cval.get("met", False)),
+                evidence=cval.get("evidence"),
+            )
+        else:
+            # Handle malformed: treat truthy as met
+            criteria[cid] = CriterionResult(met=bool(cval), evidence=None)
+
     exit_eval = PhaseExitEvaluation(
-        confidence=data.get("exit_evaluation", {}).get("confidence", 30),
+        criteria=criteria,
         reasoning=data.get("exit_evaluation", {}).get("reasoning", ""),
-        key_evidence=data.get("exit_evaluation", {}).get("key_evidence", []),
         missing_info=data.get("exit_evaluation", {}).get("missing_info", []),
     )
 
@@ -232,5 +263,6 @@ def run_comprehension(
         prospect_exact_words=data.get("prospect_exact_words", []),
         emotional_cues=data.get("emotional_cues", []),
         energy_level=data.get("energy_level", "neutral"),
+        new_information=data.get("new_information", True),
         summary=data.get("summary", ""),
     )

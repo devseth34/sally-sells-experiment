@@ -30,6 +30,7 @@ class DBSession(Base):
     # Three-layer architecture fields
     retry_count = Column(Integer, default=0)
     turn_number = Column(Integer, default=0)
+    consecutive_no_new_info = Column(Integer, default=0)
     prospect_profile = Column(Text, default="{}")
     thought_logs = Column(Text, default="[]")
     escalation_sent = Column(String, nullable=True)
@@ -47,6 +48,14 @@ class DBMessage(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Migrate: add new columns if they don't exist (safe for existing DBs)
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    existing_columns = {col["name"] for col in inspector.get_columns("sessions")}
+    with engine.connect() as conn:
+        if "consecutive_no_new_info" not in existing_columns:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN consecutive_no_new_info INTEGER DEFAULT 0"))
+            conn.commit()
 
 
 def get_db():

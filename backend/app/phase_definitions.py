@@ -23,6 +23,12 @@ PHASE_DEFINITIONS = {
             "Prospect has shared what their company does or their industry",
             "Prospect has given a reason they're interested in AI (even vague is fine)",
         ],
+        "exit_criteria_checklist": {
+            "role_shared": "Prospect has shared their role, job title, or what they do",
+            "company_or_industry_shared": "Prospect has shared what their company does, its name, or their industry",
+            "ai_interest_stated": "Prospect has given ANY reason they're interested in AI or exploring it (even vague like 'checking it out' counts)",
+        },
+        "advance_when": "all",  # all criteria must be met
         "confidence_threshold": 65,
         "sally_objectives": [
             "Learn the prospect's name, role, and company",
@@ -50,6 +56,11 @@ PHASE_DEFINITIONS = {
             "Prospect has mentioned something concrete: team size, tools, processes, or specific tasks",
             "Sally has enough operational detail to ask specific problem-awareness questions",
         ],
+        "exit_criteria_checklist": {
+            "workflow_described": "Prospect has described their current workflow, what they do day-to-day, or their process",
+            "concrete_detail_shared": "Prospect has mentioned something concrete: team size, specific tools, processes, volume of work, or specific tasks they handle",
+        },
+        "advance_when": "all",
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their language before asking follow-ups",
@@ -75,6 +86,11 @@ PHASE_DEFINITIONS = {
             "The pain is real and current, not hypothetical",
             "The pain was stated by the prospect, NOT suggested by Sally",
         ],
+        "exit_criteria_checklist": {
+            "specific_pain_articulated": "Prospect has articulated at least one SPECIFIC pain point or frustration in their OWN words (not suggested by Sally)",
+            "pain_is_current": "The pain is real and current (happening now), not hypothetical or future-tense",
+        },
+        "advance_when": "all",
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their words. If they say 'it takes forever,' say 'Takes forever...' before your question",
@@ -101,6 +117,11 @@ PHASE_DEFINITIONS = {
             "There is a clear contrast between their current pain and their desired state",
             "The prospect feels the gap between where they are and where they want to be",
         ],
+        "exit_criteria_checklist": {
+            "desired_state_described": "Prospect has described what success, improvement, or their ideal outcome would look like",
+            "gap_is_clear": "There is a clear contrast between their current pain/situation and their desired state (the 'gap' is visible)",
+        },
+        "advance_when": "all",
         "confidence_threshold": 65,
         "sally_objectives": [
             "Get them to describe their ideal outcome in concrete terms",
@@ -126,6 +147,11 @@ PHASE_DEFINITIONS = {
             "The cost feels personal and real to THEM, not hypothetical",
             "There is urgency: they understand that waiting has a price",
         ],
+        "exit_criteria_checklist": {
+            "cost_acknowledged": "Prospect has acknowledged a tangible cost of NOT solving this problem (money, time, clients, career, stress, burnout)",
+            "urgency_felt": "The prospect understands that waiting has a price, or has expressed urgency/concern about inaction",
+        },
+        "advance_when": "all",
         "confidence_threshold": 70,
         "sally_objectives": [
             "Help them quantify (even roughly) what doing nothing costs them",
@@ -153,6 +179,11 @@ PHASE_DEFINITIONS = {
             "Prospect has given a definitive response: yes to paid, yes to free, or hard no",
             "Any objections have been addressed at least once using NEPQ technique",
         ],
+        "exit_criteria_checklist": {
+            "price_stated": "The $10,000 price has been clearly mentioned to the prospect (by Sally in conversation history)",
+            "definitive_response": "Prospect has given a definitive response: yes to paid workshop, yes to free workshop, or a clear hard no",
+        },
+        "advance_when": "all",
         "confidence_threshold": 65,
         "sally_objectives": [
             "Present the workshop naturally by connecting it to THEIR specific situation",
@@ -184,6 +215,13 @@ PHASE_DEFINITIONS = {
             "Payment or booking link has been sent",
             "OR prospect has given a definitive no (end gracefully)",
         ],
+        "exit_criteria_checklist": {
+            "positive_signal_or_hard_no": "Prospect has given a positive signal (yes, sure, sounds good) OR a definitive hard no",
+            "email_collected": "An email address has been collected from the prospect",
+            "phone_collected": "A phone number has been collected from the prospect",
+            "link_sent": "A payment or booking link has been sent to the prospect",
+        },
+        "advance_when": "all_or_hard_no",  # special: hard no can also terminate
         "confidence_threshold": 70,
         "sally_objectives": [
             "If YES to paid: collect email, then phone, then send [PAYMENT_LINK]",
@@ -205,6 +243,13 @@ PHASE_DEFINITIONS = {
 def get_phase_definition(phase: NepqPhase) -> dict:
     """Get the full definition for a phase."""
     return PHASE_DEFINITIONS.get(phase, {})
+
+
+def get_exit_criteria_checklist(phase: NepqPhase) -> dict:
+    """Get the machine-readable exit criteria checklist for a phase.
+    Returns dict of {criterion_id: description}."""
+    defn = PHASE_DEFINITIONS.get(phase, {})
+    return defn.get("exit_criteria_checklist", {})
 
 
 def get_confidence_threshold(phase: NepqPhase) -> int:

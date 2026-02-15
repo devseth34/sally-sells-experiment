@@ -22,6 +22,7 @@ from app.phase_definitions import (
     get_confidence_threshold,
     get_max_retries,
     get_required_profile_fields,
+    get_exit_criteria_checklist,
 )
 
 # NEPQ Phase Order (strict sequence)
@@ -95,6 +96,7 @@ def make_decision(
     retry_count: int,
     conversation_turn: int,
     conversation_start_time: float,
+    consecutive_no_new_info: int = 0,
 ) -> DecisionOutput:
     """
     The core decision function. Pure logic, no LLM.
@@ -102,9 +104,10 @@ def make_decision(
     Decision priority:
     1. Check for session end conditions (time limit, explicit goodbye)
     2. Check for objections -> reroute if needed (but NOT in late phases)
-    3. Check exit criteria -> advance if met
-    4. Check retry count -> Break Glass if exceeded
-    5. Default: stay in current phase
+    3. Check exit criteria -> advance if met (CHECKLIST: all booleans true)
+    4. Check repetition -> pivot or advance if no new info for 2+ turns
+    5. Check retry count -> Break Glass if exceeded
+    6. Default: stay in current phase
     """
     import time
 
@@ -191,11 +194,21 @@ def make_decision(
             retry_count=retry_count,
         )
 
-    # 5. Exit criteria evaluation
-    confidence = comprehension.exit_evaluation.confidence
-    threshold = get_confidence_threshold(current_phase)
+    # 5. Exit criteria evaluation (CHECKLIST-BASED)
+    exit_eval = comprehension.exit_evaluation
+    criteria_met = exit_eval.criteria_met_count
+    criteria_total = exit_eval.criteria_total_count
+    all_criteria_met = exit_eval.all_met
+    fraction_met = exit_eval.fraction_met
 
-    if confidence >= threshold:
+    # Build a human-readable summary of criteria status
+    criteria_summary = []
+    for cid, result in exit_eval.criteria.items():
+        status = "MET" if result.met else "NOT MET"
+        criteria_summary.append(f"{cid}={status}")
+    criteria_status_str = ", ".join(criteria_summary) if criteria_summary else "no criteria"
+
+    if all_criteria_met:
         next_phase = get_next_phase(current_phase)
         if next_phase == NepqPhase.TERMINATED:
             # Before ending: check if we collected contact info
@@ -219,7 +232,7 @@ def make_decision(
             return DecisionOutput(
                 action="END",
                 target_phase=NepqPhase.TERMINATED.value,
-                reason=f"Commitment phase complete (confidence {confidence}% >= {threshold}%). Session ending.",
+                reason=f"All {criteria_total} exit criteria met ({criteria_status_str}). Session ending.",
                 retry_count=retry_count,
             )
 
@@ -229,51 +242,70 @@ def make_decision(
             return DecisionOutput(
                 action="STAY",
                 target_phase=current_phase.value,
-                reason=f"Exit criteria met ({confidence}%) but next phase blocked: {next_gap_reason}. Staying to gather more info.",
+                reason=f"All criteria met but next phase blocked: {next_gap_reason}. Staying to gather more info.",
                 retry_count=retry_count,
             )
 
         return DecisionOutput(
             action="ADVANCE",
             target_phase=next_phase.value,
-            reason=f"Exit criteria met: confidence {confidence}% >= threshold {threshold}%. Advancing to {next_phase.value}.",
+            reason=f"All {criteria_total} exit criteria met ({criteria_status_str}). Advancing to {next_phase.value}.",
             retry_count=0,
         )
 
-    # 6. Break Glass check
-    max_retries = get_max_retries(current_phase)
-    if retry_count >= max_retries:
-        # Only force-advance if we're reasonably close to the threshold (75%+)
-        # This prevents premature advancement when we haven't gathered enough info
-        if confidence >= threshold * 0.75:
+    # 6. Repetition detection: if no new info for 2+ turns, pivot or force-advance
+    if consecutive_no_new_info >= 2:
+        # If we have MOST criteria met (>= 50%), force-advance
+        if fraction_met >= 0.5:
             next_phase = get_next_phase(current_phase)
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,
-                reason=f"Break Glass: {retry_count} retries exceeded max {max_retries}. Confidence {confidence}% is above minimum {int(threshold * 0.75)}%. Force-advancing.",
+                reason=f"Repetition detected: {consecutive_no_new_info} turns with no new info. {criteria_met}/{criteria_total} criteria met ({criteria_status_str}). Force-advancing to prevent loop.",
+                retry_count=0,
+            )
+        else:
+            # Not enough criteria met to advance, but conversation is stalling. Try different angle.
+            return DecisionOutput(
+                action="BREAK_GLASS",
+                target_phase=current_phase.value,
+                reason=f"Repetition detected: {consecutive_no_new_info} turns with no new info but only {criteria_met}/{criteria_total} criteria met. Trying a different angle.",
+                retry_count=retry_count + 1,
+            )
+
+    # 7. Break Glass check (retry-based)
+    max_retries = get_max_retries(current_phase)
+    if retry_count >= max_retries:
+        # Force-advance if we have at least half the criteria met
+        if fraction_met >= 0.5:
+            next_phase = get_next_phase(current_phase)
+            return DecisionOutput(
+                action="ADVANCE",
+                target_phase=next_phase.value,
+                reason=f"Break Glass: {retry_count} retries exceeded max {max_retries}. {criteria_met}/{criteria_total} criteria met ({criteria_status_str}). Force-advancing.",
                 retry_count=0,
             )
         elif retry_count >= max_retries + 2:
-            # Hard ceiling: if we're WAY over retries, force-advance anyway to prevent infinite loops
+            # Hard ceiling: force-advance to prevent infinite loops
             next_phase = get_next_phase(current_phase)
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,
-                reason=f"Hard ceiling: {retry_count} retries, well past max {max_retries}. Force-advancing to prevent stall.",
+                reason=f"Hard ceiling: {retry_count} retries, well past max {max_retries}. Only {criteria_met}/{criteria_total} criteria met but force-advancing to prevent stall.",
                 retry_count=0,
             )
         else:
             return DecisionOutput(
                 action="BREAK_GLASS",
                 target_phase=current_phase.value,
-                reason=f"Break Glass: {retry_count} retries, confidence only {confidence}% (need {int(threshold * 0.75)}% min). Trying a different angle.",
+                reason=f"Break Glass: {retry_count} retries, only {criteria_met}/{criteria_total} criteria met ({criteria_status_str}). Trying a different angle.",
                 retry_count=retry_count + 1,
             )
 
-    # 7. Default: Stay in current phase
+    # 8. Default: Stay in current phase
     return DecisionOutput(
         action="STAY",
         target_phase=current_phase.value,
-        reason=f"Exit criteria not yet met: confidence {confidence}% < threshold {threshold}%. Missing: {comprehension.exit_evaluation.missing_info}",
+        reason=f"Exit criteria not fully met: {criteria_met}/{criteria_total} ({criteria_status_str}). Missing: {exit_eval.missing_info}",
         retry_count=retry_count + 1,
     )

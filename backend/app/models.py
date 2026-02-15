@@ -77,12 +77,46 @@ class ProspectProfile(BaseModel):
     objections_resolved: List[str] = Field(default_factory=list)
 
 
+class CriterionResult(BaseModel):
+    """Result for a single exit criterion evaluated by Layer 1."""
+    met: bool = Field(..., description="Whether this criterion has been satisfied")
+    evidence: Optional[str] = Field(None, description="Specific evidence from the conversation supporting this assessment")
+
+
 class PhaseExitEvaluation(BaseModel):
-    """Output from Layer 1: how well the current phase's exit criteria are met."""
-    confidence: int = Field(..., ge=0, le=100, description="0-100 confidence that exit criteria are satisfied")
-    reasoning: str = Field(..., description="Why this confidence level")
-    key_evidence: List[str] = Field(default_factory=list, description="Specific things the prospect said that support this score")
+    """Output from Layer 1: checklist-based evaluation of phase exit criteria.
+
+    Each criterion is a boolean check with evidence. Layer 2 counts booleans
+    deterministically — no subjective confidence scores in the transition path.
+    """
+    criteria: dict[str, CriterionResult] = Field(
+        default_factory=dict,
+        description="Per-criterion boolean evaluation: {criterion_id: {met: bool, evidence: str}}"
+    )
+    reasoning: str = Field(..., description="Brief reasoning about overall phase progress")
     missing_info: List[str] = Field(default_factory=list, description="What still needs to be uncovered in this phase")
+
+    @property
+    def criteria_met_count(self) -> int:
+        """How many criteria are currently met."""
+        return sum(1 for c in self.criteria.values() if c.met)
+
+    @property
+    def criteria_total_count(self) -> int:
+        """Total number of criteria being evaluated."""
+        return len(self.criteria)
+
+    @property
+    def all_met(self) -> bool:
+        """Whether ALL criteria are met."""
+        return self.criteria_total_count > 0 and self.criteria_met_count == self.criteria_total_count
+
+    @property
+    def fraction_met(self) -> float:
+        """Fraction of criteria met (0.0 to 1.0)."""
+        if self.criteria_total_count == 0:
+            return 0.0
+        return self.criteria_met_count / self.criteria_total_count
 
 
 class ComprehensionOutput(BaseModel):
@@ -105,6 +139,9 @@ class ComprehensionOutput(BaseModel):
     prospect_exact_words: List[str] = Field(default_factory=list, description="2-3 exact phrases/sentences from the prospect worth mirroring back")
     emotional_cues: List[str] = Field(default_factory=list, description="Specific emotional signals detected: frustration, pride, excitement, anxiety, etc. with context")
     energy_level: str = Field(default="neutral", description="The prospect's conversational energy: low/flat, neutral, warm, high/excited")
+
+    # Repetition detection (Feature B)
+    new_information: bool = Field(default=True, description="Whether this turn contains substantive NEW information not already in the prospect profile")
 
     summary: str = Field(..., description="One-sentence summary of what happened this turn")
 
@@ -136,3 +173,24 @@ class ThoughtLog(BaseModel):
     response_text: str
 
     profile_snapshot: dict
+
+
+class ConversationQualityScore(BaseModel):
+    """
+    Post-conversation quality evaluation (Feature C).
+    Scores how well Sally performed across key dimensions.
+    """
+    mirroring_score: int = Field(0, ge=0, le=100, description="Did Sally mirror the extracted phrases from Layer 1?")
+    mirroring_details: str = Field("", description="Specific examples of mirroring hits and misses")
+
+    energy_matching_score: int = Field(0, ge=0, le=100, description="Did Sally's energy match the prospect's energy signals?")
+    energy_matching_details: str = Field("", description="Specific examples of energy alignment or mismatch")
+
+    structure_score: int = Field(0, ge=0, le=100, description="Did Mirror -> Validate -> Question structure hold?")
+    structure_details: str = Field("", description="Per-turn assessment of structure adherence")
+
+    emotional_arc_score: int = Field(0, ge=0, le=100, description="Was the emotional arc coherent across phases?")
+    emotional_arc_details: str = Field("", description="How emotions progressed through the conversation")
+
+    overall_score: int = Field(0, ge=0, le=100, description="Weighted overall quality score")
+    recommendations: List[str] = Field(default_factory=list, description="Specific improvements for future conversations")

@@ -96,6 +96,7 @@ class SallyEngine:
         retry_count: int,
         turn_number: int,
         conversation_start_time: float,
+        consecutive_no_new_info: int = 0,
     ) -> dict:
         """
         Process a single conversation turn through all three layers.
@@ -109,6 +110,7 @@ class SallyEngine:
                 "phase_changed": bool,
                 "session_ended": bool,
                 "retry_count": int,
+                "consecutive_no_new_info": int,
             }
         """
 
@@ -129,7 +131,8 @@ class SallyEngine:
         )
         logger.info(f"[Turn {turn_number}] Layer 1 result: intent={comprehension.user_intent}, "
                      f"objection={comprehension.objection_type}, "
-                     f"exit_confidence={comprehension.exit_evaluation.confidence}%")
+                     f"criteria={comprehension.exit_evaluation.criteria_met_count}/{comprehension.exit_evaluation.criteria_total_count}, "
+                     f"new_info={comprehension.new_information}")
 
         # Update profile with Layer 1 extractions
         if comprehension.profile_updates:
@@ -142,6 +145,14 @@ class SallyEngine:
             if objection_text not in profile.objections_encountered:
                 profile.objections_encountered.append(objection_text)
 
+        # Repetition detection: track consecutive turns with no new information
+        if comprehension.new_information:
+            consecutive_no_new_info = 0
+        else:
+            consecutive_no_new_info += 1
+        logger.info(f"[Turn {turn_number}] Repetition tracker: new_info={comprehension.new_information}, "
+                     f"consecutive_no_new_info={consecutive_no_new_info}")
+
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
         decision = make_decision(
@@ -151,6 +162,7 @@ class SallyEngine:
             retry_count=retry_count,
             conversation_turn=turn_number,
             conversation_start_time=conversation_start_time,
+            consecutive_no_new_info=consecutive_no_new_info,
         )
         logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
                      f"target_phase={decision.target_phase}, reason={decision.reason}")
@@ -202,4 +214,5 @@ class SallyEngine:
             "phase_changed": phase_changed,
             "session_ended": session_ended,
             "retry_count": decision.retry_count,
+            "consecutive_no_new_info": consecutive_no_new_info,
         }
