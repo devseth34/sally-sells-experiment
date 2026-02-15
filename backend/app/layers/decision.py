@@ -111,13 +111,14 @@ def make_decision(
     Decision priority:
     1. Check for session end conditions (time limit, explicit goodbye)
     2. Check for objections -> reroute or diffuse (NEPQ protocol in late phases)
-    3. Minimum turn check -> STAY if below min_turns
-    4. Probing trigger -> PROBE for thin/surface responses
-    5. Check exit criteria -> advance if met
+    3. Gap Builder constraint check
+    4. Minimum turn check -> STAY if below min_turns (does NOT count as retry)
+    5. Check exit criteria -> advance if all met (checked BEFORE probe)
     6. Emotional depth gate -> block CONSEQUENCE->OWNERSHIP without deep engagement
-    7. Check repetition -> pivot or advance if no new info for 2+ turns
-    8. Check retry count -> Break Glass if exceeded
-    9. Default: stay in current phase
+    7. Probing trigger -> PROBE for thin/surface responses (only when criteria NOT all met)
+    8. Check repetition -> pivot or advance if no new info for 2+ turns
+    9. Check retry count -> Break Glass if exceeded
+    10. Default: stay in current phase
     """
     import time
 
@@ -207,40 +208,21 @@ def make_decision(
     # === NEW: Pre-exit-criteria checks ===
 
     # 5. Minimum turn check — prevent advancing too quickly
+    #    Does NOT increment retry_count: pacing is not a failure signal.
     min_turns = get_min_turns(current_phase)
     if turns_in_current_phase < min_turns:
         return DecisionOutput(
             action="STAY",
             target_phase=current_phase.value,
             reason=f"Minimum turns not reached: {turns_in_current_phase}/{min_turns} in {current_phase.value}.",
-            retry_count=retry_count + 1,
-        )
-
-    # 6. Probing trigger — force deeper engagement for thin/surface responses
-    richness = comprehension.response_richness
-    depth = comprehension.emotional_depth
-
-    # Thin + surface = always probe (regardless of phase)
-    if richness == "thin" and depth == "surface":
-        return DecisionOutput(
-            action="PROBE",
-            target_phase=current_phase.value,
-            reason=f"Prospect gave thin/surface response. Need to dig deeper before advancing.",
             retry_count=retry_count,
         )
 
-    # Thin responses in critical phases = probe even if moderate emotional depth
-    if richness == "thin" and current_phase in CRITICAL_PHASES:
-        return DecisionOutput(
-            action="PROBE",
-            target_phase=current_phase.value,
-            reason=f"Critical phase {current_phase.value} requires substantive engagement. Response too thin.",
-            retry_count=retry_count,
-        )
+    # === Exit criteria evaluation (CHECKLIST-BASED) — checked BEFORE probe ===
+    # This ensures that when all criteria are met, Sally advances even if the
+    # response was thin. PROBE only fires when criteria are NOT fully met.
 
-    # === Exit criteria evaluation (CHECKLIST-BASED) ===
-
-    # 7. Exit criteria evaluation
+    # 6. Exit criteria evaluation
     exit_eval = comprehension.exit_evaluation
     criteria_met = exit_eval.criteria_met_count
     criteria_total = exit_eval.criteria_total_count
@@ -255,7 +237,7 @@ def make_decision(
     criteria_status_str = ", ".join(criteria_summary) if criteria_summary else "no criteria"
 
     if all_criteria_met:
-        # 8. Emotional depth gate: CONSEQUENCE -> OWNERSHIP requires deep emotional engagement
+        # 6a. Emotional depth gate: CONSEQUENCE -> OWNERSHIP requires deep emotional engagement
         next_phase = get_next_phase(current_phase)
         if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
             if deepest_emotional_depth != "deep":
@@ -309,7 +291,31 @@ def make_decision(
             retry_count=0,
         )
 
-    # 9. Repetition detection: if no new info for 2+ turns, pivot or force-advance
+    # 7. Probing trigger — force deeper engagement for thin/surface responses
+    #    Only fires when exit criteria are NOT fully met (all_criteria_met was False above).
+    #    PROBE increments retry_count so Break Glass can eventually rescue stuck conversations.
+    richness = comprehension.response_richness
+    depth = comprehension.emotional_depth
+
+    # Thin + surface = probe (regardless of phase)
+    if richness == "thin" and depth == "surface":
+        return DecisionOutput(
+            action="PROBE",
+            target_phase=current_phase.value,
+            reason=f"Prospect gave thin/surface response. Need to dig deeper. ({criteria_met}/{criteria_total} criteria met: {criteria_status_str})",
+            retry_count=retry_count + 1,
+        )
+
+    # Thin responses in critical phases = probe even if moderate emotional depth
+    if richness == "thin" and current_phase in CRITICAL_PHASES:
+        return DecisionOutput(
+            action="PROBE",
+            target_phase=current_phase.value,
+            reason=f"Critical phase {current_phase.value} requires substantive engagement. Response too thin. ({criteria_met}/{criteria_total} criteria met: {criteria_status_str})",
+            retry_count=retry_count + 1,
+        )
+
+    # 8. Repetition detection: if no new info for 2+ turns, pivot or force-advance
     if consecutive_no_new_info >= 2:
         # If we have MOST criteria met (>= 50%), force-advance
         if fraction_met >= 0.5:
@@ -328,7 +334,7 @@ def make_decision(
                 retry_count=retry_count + 1,
             )
 
-    # 10. Break Glass check (retry-based)
+    # 9. Break Glass check (retry-based)
     max_retries = get_max_retries(current_phase)
     if retry_count >= max_retries:
         if fraction_met >= 0.5:
@@ -355,7 +361,7 @@ def make_decision(
                 retry_count=retry_count + 1,
             )
 
-    # 11. Default: Stay in current phase
+    # 10. Default: Stay in current phase
     return DecisionOutput(
         action="STAY",
         target_phase=current_phase.value,
