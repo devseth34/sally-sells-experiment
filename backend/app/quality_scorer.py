@@ -159,7 +159,7 @@ Produce the quality score JSON."""
         response = _get_client().messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=1500,
-            system=QUALITY_SCORER_PROMPT,
+            system=[{"type": "text", "text": QUALITY_SCORER_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": prompt}],
         )
 

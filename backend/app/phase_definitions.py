@@ -18,6 +18,7 @@ from app.schemas import NepqPhase
 PHASE_DEFINITIONS = {
     NepqPhase.CONNECTION: {
         "purpose": "Build rapport and understand who they are. Get their role, company context, and why they're here. Be warm, curious, and mirror everything they say. 2-3 turns is fine.",
+        "response_length": {"max_sentences": 2, "max_tokens": 120},
         "exit_criteria": [
             "Prospect has shared their role or job title",
             "Prospect has shared what their company does or their industry",
@@ -52,6 +53,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.SITUATION: {
         "purpose": "Map their current operations. Understand what they do day-to-day so you can ask smart problem questions. Mirror everything. 2-3 turns.",
+        "response_length": {"max_sentences": 2, "max_tokens": 120},
         "exit_criteria": [
             "Prospect has described their current workflow, process, or day-to-day work",
             "Prospect has mentioned something concrete: team size, tools, processes, or specific tasks",
@@ -62,7 +64,7 @@ PHASE_DEFINITIONS = {
             "concrete_detail_shared": "Prospect has mentioned something concrete: team size, specific tools, processes, volume of work, or specific tasks they handle",
         },
         "advance_when": "all",
-        "min_turns": 2,
+        "min_turns": 1,
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their language before asking follow-ups",
@@ -83,6 +85,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.PROBLEM_AWARENESS: {
         "purpose": "Surface a REAL pain point that the prospect states in their own words. Mirror their language, validate the emotion, and let them feel it. 3+ turns.",
+        "response_length": {"max_sentences": 3, "max_tokens": 150},
         "exit_criteria": [
             "Prospect has articulated at least one SPECIFIC pain point or frustration in their own words",
             "The pain is real and current, not hypothetical",
@@ -115,6 +118,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.SOLUTION_AWARENESS: {
         "purpose": "Get them to paint a picture of their ideal future. Create the GAP between where they are and where they want to be. 2-3 turns.",
+        "response_length": {"max_sentences": 3, "max_tokens": 150},
         "exit_criteria": [
             "Prospect has described what success or improvement would look like for them",
             "There is a clear contrast between their current pain and their desired state",
@@ -146,6 +150,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.CONSEQUENCE: {
         "purpose": "Make the cost of inaction REAL and PERSONAL. What happens if they don't fix this? This creates the urgency that makes the pitch land. 3+ turns.",
+        "response_length": {"max_sentences": 3, "max_tokens": 180},
         "exit_criteria": [
             "Prospect has acknowledged a tangible cost of NOT solving this (money, time, clients, career, stress)",
             "The cost feels personal and real to THEM, not hypothetical",
@@ -156,7 +161,7 @@ PHASE_DEFINITIONS = {
             "urgency_felt": "The prospect understands that waiting has a price, or has expressed urgency/concern about inaction",
         },
         "advance_when": "all",
-        "min_turns": 3,
+        "min_turns": 2,
         "confidence_threshold": 70,
         "sally_objectives": [
             "Help them quantify (even roughly) what doing nothing costs them",
@@ -179,6 +184,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.OWNERSHIP: {
         "purpose": "Present the $10,000 Discovery Workshop. Handle objections with NEPQ techniques. If they still say no, offer the free workshop. Only advance when they say yes.",
+        "response_length": {"max_sentences": 4, "max_tokens": 200},
         "exit_criteria": [
             "The $10,000 price has been clearly stated to the prospect",
             "Prospect has given a definitive response: yes to paid, yes to free, or hard no",
@@ -216,6 +222,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.COMMITMENT: {
         "purpose": "Close. Collect email + phone. Send the appropriate link (payment or booking). Done.",
+        "response_length": {"max_sentences": 4, "max_tokens": 300},
         "exit_criteria": [
             "Prospect has given a positive signal (yes, sure, sounds good, etc.)",
             "Email address has been collected",
@@ -277,6 +284,12 @@ def get_min_turns(phase: NepqPhase) -> int:
     """Get the minimum turns required before allowing phase advancement."""
     defn = PHASE_DEFINITIONS.get(phase, {})
     return defn.get("min_turns", 1)
+
+
+def get_response_length(phase: NepqPhase) -> dict:
+    """Get phase-specific response length limits (max_sentences, max_tokens)."""
+    defn = PHASE_DEFINITIONS.get(phase, {})
+    return defn.get("response_length", {"max_sentences": 4, "max_tokens": 200})
 
 
 def get_required_profile_fields(phase: NepqPhase) -> list:

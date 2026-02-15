@@ -29,7 +29,7 @@ load_dotenv(_ENV_PATH, override=True)
 
 from app.schemas import NepqPhase
 from app.models import DecisionOutput, ProspectProfile
-from app.phase_definitions import get_phase_definition
+from app.phase_definitions import get_phase_definition, get_response_length
 
 logger = logging.getLogger("sally.response")
 
@@ -141,7 +141,7 @@ WHEN TO MENTION THE OFFER:
 
 HARD RULES — VIOLATING ANY OF THESE IS FAILURE:
 1. ONE question per response max. Never stack questions with "and."
-2. 2-4 sentences max. Shorter is almost always better.
+2. Keep responses SHORT. Sentence count depends on the phase (see phase instructions). In early phases (CONNECTION, SITUATION): 1-2 sentences max. Mirror in 2-5 words, not a full restatement. Get to your question fast.
 3. NEVER mention workshop, 100x, Nik Shah, or price before OWNERSHIP phase.
 4. NEVER give advice or recommendations before OWNERSHIP phase. Only questions.
 5. NO hype words: guaranteed, revolutionary, game-changing, cutting-edge, transform, unlock, skyrocket, supercharge, unleash, incredible, amazing, powerful.
@@ -281,8 +281,9 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
                 logger.warning(f"Circuit breaker: pitch signal '{signal}' in early phase {target_phase.value}")
                 return "What's been the biggest challenge with that so far?"
 
-    # Check 5: Too long (more than 5 sentences, or 10 for closing messages with links)
-    max_sentences = 10 if is_closing else 5
+    # Check 5: Too long — phase-aware sentence limit (relaxed for closing messages with links)
+    phase_max = get_response_length(target_phase).get("max_sentences", 4)
+    max_sentences = 10 if is_closing else phase_max
     sentences = [s.strip() for s in re.split(r'[.!?]+', response_text) if s.strip()]
     if len(sentences) > max_sentences:
         logger.warning(f"Circuit breaker: response too long ({len(sentences)} sentences), trimming")
@@ -409,9 +410,13 @@ HIGH EMOTION: They're feeling this strongly. SLOW DOWN. Validate the emotion bef
 """
 
     # Build phase-specific instructions
+    length_config = get_response_length(target_phase)
+    phase_max_sentences = length_config.get("max_sentences", 4)
     phase_instructions = f"""
 CURRENT PHASE: {target_phase.value}
 PHASE PURPOSE: {phase_def.get('purpose', '')}
+
+RESPONSE LENGTH: {phase_max_sentences} sentences MAX in this phase. Shorter is better. In CONNECTION/SITUATION, mirrors should be 2-5 words, not a full restatement. Get to your question fast.
 
 YOUR OBJECTIVES IN THIS PHASE:
 {json.dumps(phase_def.get('sally_objectives', []), indent=2)}
@@ -751,7 +756,7 @@ Now generate Sally's response. {"PROBE: Pick the most interesting concept and as
 2. QUESTION: Ask ONE specific question that moves forward.'''}
 
 CRITICAL RULES:
-- 2-4 sentences total. Shorter is almost always better.
+- {phase_max_sentences} sentences max in this phase. Shorter is almost always better.
 - Sound like a smart friend texting, not a chatbot or interviewer.
 - Match their energy level. Don't be bubbly if they're flat.
 - No hype words, no corporate speak, no em dashes, no semicolons.
@@ -803,12 +808,13 @@ def generate_response(
 
     # Closing messages get slightly more room for a warm wrap-up
     is_closing = decision.action == "END" or NepqPhase(decision.target_phase) in {NepqPhase.COMMITMENT, NepqPhase.TERMINATED}
-    max_tokens = 300 if is_closing else 200
+    length_config = get_response_length(NepqPhase(decision.target_phase))
+    max_tokens = 300 if is_closing else length_config.get("max_tokens", 200)
 
     response = _get_client().messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=max_tokens,
-        system=SALLY_PERSONA,
+        system=[{"type": "text", "text": SALLY_PERSONA, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
 

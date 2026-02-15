@@ -230,7 +230,7 @@ def run_comprehension(
     response = _get_client().messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=800,
-        system=COMPREHENSION_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": COMPREHENSION_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
 
