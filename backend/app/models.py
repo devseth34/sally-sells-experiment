@@ -140,8 +140,15 @@ class ComprehensionOutput(BaseModel):
     emotional_cues: List[str] = Field(default_factory=list, description="Specific emotional signals detected: frustration, pride, excitement, anxiety, etc. with context")
     energy_level: str = Field(default="neutral", description="The prospect's conversational energy: low/flat, neutral, warm, high/excited")
 
+    # Response quality signals
+    response_richness: str = Field(default="moderate", description="thin (1-5 words, filler, vague) | moderate (real sentence, some specifics) | rich (multi-sentence, vivid detail, emotional language)")
+    emotional_depth: str = Field(default="surface", description="surface (factual, no emotion) | moderate (expressed feeling) | deep (vulnerability, fear, personal stakes)")
+
     # Repetition detection (Feature B)
     new_information: bool = Field(default=True, description="Whether this turn contains substantive NEW information not already in the prospect profile")
+
+    # Objection diffusion tracking
+    objection_diffusion_status: str = Field(default="not_applicable", description="not_applicable | diffused | isolated | resolved | repeated")
 
     summary: str = Field(..., description="One-sentence summary of what happened this turn")
 
@@ -151,7 +158,7 @@ class DecisionOutput(BaseModel):
     Output from Layer 2 (Decision Layer).
     Deterministic code produces this based on Layer 1's output.
     """
-    action: str = Field(..., description="ADVANCE, STAY, REROUTE, BREAK_GLASS, END")
+    action: str = Field(..., description="ADVANCE, STAY, PROBE, REROUTE, BREAK_GLASS, END")
     target_phase: str = Field(..., description="The phase Sally should be in for her response")
     reason: str = Field(..., description="Human-readable explanation of the decision")
     objection_context: Optional[str] = None

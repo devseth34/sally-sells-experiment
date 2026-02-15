@@ -31,6 +31,9 @@ class DBSession(Base):
     retry_count = Column(Integer, default=0)
     turn_number = Column(Integer, default=0)
     consecutive_no_new_info = Column(Integer, default=0)
+    turns_in_current_phase = Column(Integer, default=0)
+    deepest_emotional_depth = Column(String, default="surface")
+    objection_diffusion_step = Column(Integer, default=0)
     prospect_profile = Column(Text, default="{}")
     thought_logs = Column(Text, default="[]")
     escalation_sent = Column(String, nullable=True)
@@ -53,9 +56,16 @@ def init_db():
     inspector = inspect(engine)
     existing_columns = {col["name"] for col in inspector.get_columns("sessions")}
     with engine.connect() as conn:
-        if "consecutive_no_new_info" not in existing_columns:
-            conn.execute(text("ALTER TABLE sessions ADD COLUMN consecutive_no_new_info INTEGER DEFAULT 0"))
-            conn.commit()
+        migrations = {
+            "consecutive_no_new_info": "ALTER TABLE sessions ADD COLUMN consecutive_no_new_info INTEGER DEFAULT 0",
+            "turns_in_current_phase": "ALTER TABLE sessions ADD COLUMN turns_in_current_phase INTEGER DEFAULT 0",
+            "deepest_emotional_depth": "ALTER TABLE sessions ADD COLUMN deepest_emotional_depth VARCHAR DEFAULT 'surface'",
+            "objection_diffusion_step": "ALTER TABLE sessions ADD COLUMN objection_diffusion_step INTEGER DEFAULT 0",
+        }
+        for col_name, sql in migrations.items():
+            if col_name not in existing_columns:
+                conn.execute(text(sql))
+        conn.commit()
 
 
 def get_db():

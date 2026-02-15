@@ -29,6 +29,7 @@ PHASE_DEFINITIONS = {
             "ai_interest_stated": "Prospect has given ANY reason they're interested in AI or exploring it (even vague like 'checking it out' counts)",
         },
         "advance_when": "all",  # all criteria must be met
+        "min_turns": 2,
         "confidence_threshold": 65,
         "sally_objectives": [
             "Learn the prospect's name, role, and company",
@@ -61,6 +62,7 @@ PHASE_DEFINITIONS = {
             "concrete_detail_shared": "Prospect has mentioned something concrete: team size, specific tools, processes, volume of work, or specific tasks they handle",
         },
         "advance_when": "all",
+        "min_turns": 2,
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their language before asking follow-ups",
@@ -80,7 +82,7 @@ PHASE_DEFINITIONS = {
     },
 
     NepqPhase.PROBLEM_AWARENESS: {
-        "purpose": "Surface a REAL pain point that the prospect states in their own words. Mirror their language, validate the emotion, and let them feel it. 2-3 turns.",
+        "purpose": "Surface a REAL pain point that the prospect states in their own words. Mirror their language, validate the emotion, and let them feel it. 3+ turns.",
         "exit_criteria": [
             "Prospect has articulated at least one SPECIFIC pain point or frustration in their own words",
             "The pain is real and current, not hypothetical",
@@ -91,6 +93,7 @@ PHASE_DEFINITIONS = {
             "pain_is_current": "The pain is real and current (happening now), not hypothetical or future-tense",
         },
         "advance_when": "all",
+        "min_turns": 3,
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their words. If they say 'it takes forever,' say 'Takes forever...' before your question",
@@ -122,6 +125,7 @@ PHASE_DEFINITIONS = {
             "gap_is_clear": "There is a clear contrast between their current pain/situation and their desired state (the 'gap' is visible)",
         },
         "advance_when": "all",
+        "min_turns": 2,
         "confidence_threshold": 65,
         "sally_objectives": [
             "Get them to describe their ideal outcome in concrete terms",
@@ -141,7 +145,7 @@ PHASE_DEFINITIONS = {
     },
 
     NepqPhase.CONSEQUENCE: {
-        "purpose": "Make the cost of inaction REAL and PERSONAL. What happens if they don't fix this? This creates the urgency that makes the pitch land. 2-4 turns.",
+        "purpose": "Make the cost of inaction REAL and PERSONAL. What happens if they don't fix this? This creates the urgency that makes the pitch land. 3+ turns.",
         "exit_criteria": [
             "Prospect has acknowledged a tangible cost of NOT solving this (money, time, clients, career, stress)",
             "The cost feels personal and real to THEM, not hypothetical",
@@ -152,6 +156,7 @@ PHASE_DEFINITIONS = {
             "urgency_felt": "The prospect understands that waiting has a price, or has expressed urgency/concern about inaction",
         },
         "advance_when": "all",
+        "min_turns": 3,
         "confidence_threshold": 70,
         "sally_objectives": [
             "Help them quantify (even roughly) what doing nothing costs them",
@@ -180,10 +185,13 @@ PHASE_DEFINITIONS = {
             "Any objections have been addressed at least once using NEPQ technique",
         ],
         "exit_criteria_checklist": {
-            "price_stated": "The $10,000 price has been clearly mentioned to the prospect (by Sally in conversation history)",
-            "definitive_response": "Prospect has given a definitive response: yes to paid workshop, yes to free workshop, or a clear hard no",
+            "commitment_question_asked": "Sally asked a 'do you feel like...' commitment question about the solution helping with their specific pain (not just any question)",
+            "prospect_self_persuaded": "The PROSPECT articulated at least one specific reason why they feel the solution could work for them (their own words, not just 'yeah' or 'sure')",
+            "price_stated": "The $10,000 price has been clearly communicated to the prospect",
+            "definitive_response": "Prospect gave a clear response to the offer: yes to paid, yes to free, or a clear hard no",
         },
         "advance_when": "all",
+        "min_turns": 2,
         "confidence_threshold": 65,
         "sally_objectives": [
             "Present the workshop naturally by connecting it to THEIR specific situation",
@@ -222,6 +230,7 @@ PHASE_DEFINITIONS = {
             "link_sent": "A payment or booking link has been sent to the prospect",
         },
         "advance_when": "all_or_hard_no",  # special: hard no can also terminate
+        "min_turns": 1,
         "confidence_threshold": 70,
         "sally_objectives": [
             "If YES to paid: collect email, then phone, then send [PAYMENT_LINK]",
@@ -262,6 +271,12 @@ def get_max_retries(phase: NepqPhase) -> int:
     """Get the maximum retries before Break Glass triggers."""
     defn = PHASE_DEFINITIONS.get(phase, {})
     return defn.get("max_retries", 4)
+
+
+def get_min_turns(phase: NepqPhase) -> int:
+    """Get the minimum turns required before allowing phase advancement."""
+    defn = PHASE_DEFINITIONS.get(phase, {})
+    return defn.get("min_turns", 1)
 
 
 def get_required_profile_fields(phase: NepqPhase) -> list:

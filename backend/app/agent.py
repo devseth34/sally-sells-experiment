@@ -19,6 +19,7 @@ from app.models import (
     ThoughtLog,
     ProspectProfile,
     ObjectionType,
+    UserIntent,
 )
 from app.layers.comprehension import run_comprehension
 from app.layers.decision import make_decision
@@ -97,6 +98,9 @@ class SallyEngine:
         turn_number: int,
         conversation_start_time: float,
         consecutive_no_new_info: int = 0,
+        turns_in_current_phase: int = 0,
+        deepest_emotional_depth: str = "surface",
+        objection_diffusion_step: int = 0,
     ) -> dict:
         """
         Process a single conversation turn through all three layers.
@@ -111,6 +115,9 @@ class SallyEngine:
                 "session_ended": bool,
                 "retry_count": int,
                 "consecutive_no_new_info": int,
+                "turns_in_current_phase": int,
+                "deepest_emotional_depth": str,
+                "objection_diffusion_step": int,
             }
         """
 
@@ -150,8 +157,40 @@ class SallyEngine:
             consecutive_no_new_info = 0
         else:
             consecutive_no_new_info += 1
-        logger.info(f"[Turn {turn_number}] Repetition tracker: new_info={comprehension.new_information}, "
-                     f"consecutive_no_new_info={consecutive_no_new_info}")
+
+        # Track deepest emotional depth (only upgrades, never downgrades)
+        DEPTH_ORDER = {"surface": 0, "moderate": 1, "deep": 2}
+        current_depth_level = DEPTH_ORDER.get(comprehension.emotional_depth, 0)
+        deepest_level = DEPTH_ORDER.get(deepest_emotional_depth, 0)
+        if current_depth_level > deepest_level:
+            deepest_emotional_depth = comprehension.emotional_depth
+
+        # Track objection diffusion step
+        if comprehension.objection_type != ObjectionType.NONE and current_phase in {NepqPhase.OWNERSHIP, NepqPhase.COMMITMENT}:
+            if objection_diffusion_step == 0:
+                objection_diffusion_step = 1  # Start diffusion
+            elif comprehension.objection_diffusion_status == "repeated":
+                objection_diffusion_step = 1  # Restart
+        elif comprehension.objection_diffusion_status == "diffused":
+            objection_diffusion_step = max(objection_diffusion_step, 1)
+        elif comprehension.objection_diffusion_status == "isolated":
+            objection_diffusion_step = max(objection_diffusion_step, 2)
+        elif comprehension.objection_diffusion_status == "resolved":
+            objection_diffusion_step = 3
+        # Reset on definitive response
+        if comprehension.user_intent == UserIntent.AGREEMENT and objection_diffusion_step > 0:
+            objection_diffusion_step = 0
+
+        # Increment turns in current phase
+        turns_in_current_phase += 1
+
+        logger.info(f"[Turn {turn_number}] Tracking: new_info={comprehension.new_information}, "
+                     f"consecutive_no_new_info={consecutive_no_new_info}, "
+                     f"turns_in_phase={turns_in_current_phase}, "
+                     f"richness={comprehension.response_richness}, "
+                     f"depth={comprehension.emotional_depth}, "
+                     f"deepest_depth={deepest_emotional_depth}, "
+                     f"diffusion_step={objection_diffusion_step}")
 
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
@@ -163,30 +202,43 @@ class SallyEngine:
             conversation_turn=turn_number,
             conversation_start_time=conversation_start_time,
             consecutive_no_new_info=consecutive_no_new_info,
+            turns_in_current_phase=turns_in_current_phase,
+            deepest_emotional_depth=deepest_emotional_depth,
+            objection_diffusion_step=objection_diffusion_step,
         )
         logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
                      f"target_phase={decision.target_phase}, reason={decision.reason}")
 
         # Build emotional context from Layer 1 for Layer 3
+        # Include exit criteria for OWNERSHIP sequencing
+        exit_criteria_for_l3 = {}
+        for cid, cresult in comprehension.exit_evaluation.criteria.items():
+            exit_criteria_for_l3[cid] = {"met": cresult.met, "evidence": cresult.evidence}
+
         emotional_context = {
             "prospect_exact_words": comprehension.prospect_exact_words,
             "emotional_cues": comprehension.emotional_cues,
             "energy_level": comprehension.energy_level,
             "emotional_tone": comprehension.emotional_tone,
             "emotional_intensity": comprehension.emotional_intensity,
+            "response_richness": comprehension.response_richness,
+            "emotional_depth": comprehension.emotional_depth,
+            "exit_evaluation_criteria": exit_criteria_for_l3,
         }
         logger.info(f"[Turn {turn_number}] Emotional context: tone={comprehension.emotional_tone}, "
                      f"energy={comprehension.energy_level}, "
                      f"mirror_phrases={comprehension.prospect_exact_words}")
 
         # Layer 3: Response (with circuit breaker + emotional intelligence)
-        logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase}")
+        is_probe = decision.action == "PROBE"
+        logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase} (probe={is_probe})")
         response_text = generate_response(
             decision=decision,
             user_message=user_message,
             conversation_history=conversation_history,
             profile=profile,
             emotional_context=emotional_context,
+            probe_mode=is_probe,
         )
         logger.info(f"[Turn {turn_number}] Layer 3 result: '{response_text[:80]}...'")
 
@@ -206,6 +258,11 @@ class SallyEngine:
         phase_changed = new_phase != current_phase
         session_ended = decision.action == "END" or new_phase == NepqPhase.TERMINATED
 
+        # Reset phase-specific counters on phase change
+        if phase_changed:
+            turns_in_current_phase = 0
+            objection_diffusion_step = 0
+
         return {
             "response_text": response_text,
             "new_phase": decision.target_phase,
@@ -215,4 +272,7 @@ class SallyEngine:
             "session_ended": session_ended,
             "retry_count": decision.retry_count,
             "consecutive_no_new_info": consecutive_no_new_info,
+            "turns_in_current_phase": turns_in_current_phase,
+            "deepest_emotional_depth": deepest_emotional_depth,
+            "objection_diffusion_step": objection_diffusion_step,
         }

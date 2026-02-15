@@ -207,6 +207,9 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             turn_number=db_session.turn_number,
             conversation_start_time=db_session.start_time,
             consecutive_no_new_info=getattr(db_session, 'consecutive_no_new_info', 0) or 0,
+            turns_in_current_phase=getattr(db_session, 'turns_in_current_phase', 0) or 0,
+            deepest_emotional_depth=getattr(db_session, 'deepest_emotional_depth', 'surface') or 'surface',
+            objection_diffusion_step=getattr(db_session, 'objection_diffusion_step', 0) or 0,
         )
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
@@ -219,6 +222,9 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             "session_ended": False,
             "retry_count": db_session.retry_count + 1,
             "consecutive_no_new_info": getattr(db_session, 'consecutive_no_new_info', 0) or 0,
+            "turns_in_current_phase": getattr(db_session, 'turns_in_current_phase', 0) or 0,
+            "deepest_emotional_depth": getattr(db_session, 'deepest_emotional_depth', 'surface') or 'surface',
+            "objection_diffusion_step": getattr(db_session, 'objection_diffusion_step', 0) or 0,
         }
 
     # Update session state
@@ -226,9 +232,15 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     db_session.current_phase = new_phase.value
     db_session.retry_count = result["retry_count"]
     db_session.prospect_profile = result["new_profile_json"]
-    # Track repetition detection counter
+    # Track all state counters
     if hasattr(db_session, 'consecutive_no_new_info'):
         db_session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
+    if hasattr(db_session, 'turns_in_current_phase'):
+        db_session.turns_in_current_phase = result.get("turns_in_current_phase", 0)
+    if hasattr(db_session, 'deepest_emotional_depth'):
+        db_session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
+    if hasattr(db_session, 'objection_diffusion_step'):
+        db_session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
 
     # Append thought log
     try:
