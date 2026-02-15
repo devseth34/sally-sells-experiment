@@ -212,7 +212,7 @@ PHASE_DEFINITIONS = {
             "Only advance to COMMITMENT when they give a clear yes (to paid OR free)",
         ],
         "extraction_targets": ["decision_authority", "decision_timeline", "budget_signals"],
-        "max_retries": 6,
+        "max_retries": 4,
         "question_patterns": [
             "Based on everything you've shared... our CEO Nik Shah does a hands-on Discovery Workshop where he comes onsite and builds a customized AI plan for your team. It's a $10,000 investment. Does that feel like something worth exploring?",
             "Who else would need to be involved in a decision like this?",

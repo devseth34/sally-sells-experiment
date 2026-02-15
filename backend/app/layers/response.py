@@ -107,6 +107,16 @@ MIRRORING — TRANSFORMATIVE, NOT VERBATIM:
   * "Into AI. What kind of AI stuff?" ← fragment echo + generic question
 - The test: if your first 5 words are just their words rearranged, you're parroting. Rewrite it.
 
+MIRRORING REMINDER:
+When you mirror, grab their EXACT phrase — 2-4 words — and use it as the start of your next thought.
+WRONG (restatement): "So you're doing the personal touch with your outreach."
+RIGHT (mirror): "Personalized emails. What's your open rate looking like on those?"
+WRONG (restatement): "right so you're doing the follow-ups but still not getting the conversion you want"
+RIGHT (mirror): "Conversion rate is low... how low are we talking?"
+WRONG (generic): "How does that feel when it happens?"
+RIGHT (mirror): "Annoyed, wanting to learn... what would you learn first if you could?"
+The mirror should feel like an echo, not a summary. 2-4 of their words, then your question.
+
 ENERGY MATCHING:
 - If they're excited → match with interest, not hype: "oh wait, really?" not "that's incredible!"
 - If they're low energy → be calm and specific. Draw them out gently.
@@ -508,15 +518,17 @@ Rules for PROBE responses:
 - Do NOT validate or editorialize before probing. Just probe.
 """
 
-    # OWNERSHIP sequencing (NEPQ 4-step close)
+    # OWNERSHIP sequencing — substep-driven (NEPQ close with state machine)
     ownership_instructions = ""
     if target_phase == NepqPhase.OWNERSHIP:
-        exit_eval = emotional_context.get("exit_evaluation_criteria", {}) if emotional_context else {}
-        commitment_asked = exit_eval.get("commitment_question_asked", {}).get("met", False)
-        self_persuaded = exit_eval.get("prospect_self_persuaded", {}).get("met", False)
-        price_stated = exit_eval.get("price_stated", {}).get("met", False)
+        substep = emotional_context.get("ownership_substep", 0) if emotional_context else 0
 
-        if not commitment_asked:
+        # Build profile context for bridge step
+        profile_pain = ", ".join(profile.pain_points) if profile.pain_points else "their challenges"
+        profile_frustrations = ", ".join(profile.frustrations) if profile.frustrations else ""
+        profile_cost = profile.cost_of_inaction or ""
+
+        if substep <= 1:
             ownership_instructions = """
 OWNERSHIP PHASE — STEP 1: COMMITMENT QUESTION
 Ask: "Based on everything we've talked about... [reference their specific pain and desired state]... do you feel like having a customized AI plan could help you get there?"
@@ -526,34 +538,71 @@ Ask: "Based on everything we've talked about... [reference their specific pain a
 - Curious tone, not assumptive
 - Do NOT mention price, workshop, 100x, or Nik yet
 """
-        elif not self_persuaded:
+        elif substep == 2:
             ownership_instructions = """
 OWNERSHIP PHASE — STEP 2: SELF-PERSUASION PROBE
 They gave a positive response. Now ask: "What makes you feel like it could work for you?"
 - Get them to articulate their OWN reasons
 - If they gave a vague yes ("yeah maybe"), probe: "Yeah? What specifically about it feels like it could help?"
 - Do NOT proceed to price until they've given at least one real reason
+- Maximum 2 attempts at self-persuasion. If they can't articulate, that's OK — move on.
 """
-        elif not price_stated:
+        elif substep == 3:
+            ownership_instructions = f"""
+OWNERSHIP PHASE — STEP 3: BRIDGE (use their words)
+They agreed but couldn't articulate why. That's fine. Bridge using THEIR OWN words:
+Their pain: {profile_pain}
+Their frustrations: {profile_frustrations}
+Their cost of inaction: {profile_cost}
+
+Say something like: "Look, you told me [their exact pain]. And [their exact consequence]. This workshop is built to fix exactly that. Would you want to hear what it looks like?"
+- Use THEIR exact words from earlier, not your paraphrase
+- Max 2-3 sentences + yes/no
+- Do NOT ask open-ended questions
+- Do NOT probe further. State, connect, ask yes/no.
+- This is ONE bridge attempt. After their response, move to presenting the offer.
+"""
+        elif substep == 4:
             ownership_instructions = """
-OWNERSHIP PHASE — STEP 3: PRESENT THE OFFER
+OWNERSHIP PHASE — STEP 4: PRESENT THE OFFER
 NOW present the workshop: "So our CEO Nik Shah does a hands-on Discovery Workshop where he comes onsite and builds a customized AI plan with your team. It's a $10,000 investment."
 - State the price clearly and confidently
 - One sentence describing what they get, one sentence with the price
 - Then STOP. Wait for their response. Do NOT ask "does that sound good?" or push for a yes.
 """
-        else:
+        elif substep == 5:
             ownership_instructions = """
-OWNERSHIP PHASE — STEP 4: HANDLE RESPONSE
-- If YES → advance to COMMITMENT (collect contact info)
-- If OBJECTION → use NEPQ objection diffusion (see objection handling rules)
-- If HARD NO → offer free workshop fallback gracefully
+OWNERSHIP PHASE — STEP 5: OBJECTION HANDLING
+The prospect objected after hearing the price. Use NEPQ objection diffusion:
+1. DIFFUSE: "That's not a problem..." (lower the temperature)
+2. ISOLATE: "[Objection] aside, do you feel like having a customized AI plan is the right move?"
+3. RESOLVE: "If we could figure out the [objection] piece, would you want to move forward?"
+Do ONE step per message. Do NOT stack steps.
+If the objection persists after full diffusion, offer the free workshop as a positive alternative.
+"""
+        else:  # substep >= 6
+            ownership_instructions = """
+OWNERSHIP PHASE — STEP 6: CLOSE OR FALLBACK
+- If YES to paid → advance to COMMITMENT (collect contact info). Say "Great!" and ask for their email.
+- If they chose free workshop → advance to COMMITMENT (collect email for free workshop link)
+- If HARD NO → end gracefully. Thank them warmly, leave the door open.
+- Do NOT restart discovery. Do NOT ask more questions. Close it.
 """
 
+    # Playbook injection — situation playbooks from Layer 2
+    playbook_instructions = ""
+    if decision.objection_context and "PLAYBOOK:" in (decision.objection_context or ""):
+        playbook_name = decision.objection_context.replace("PLAYBOOK:", "").strip()
+        from app.playbooks import get_playbook_instructions
+        playbook_instructions = get_playbook_instructions(playbook_name, profile)
+        if playbook_instructions:
+            logger.info(f"Playbook injected: {playbook_name}")
+
     # NEPQ Objection Diffusion Protocol (replaces old objection handling in OWNERSHIP)
+    # Skip regular objection routing when a playbook is active — the playbook IS the instruction
     current_phase_is_late = target_phase in {NepqPhase.OWNERSHIP, NepqPhase.COMMITMENT}
     objection_instructions = ""
-    if decision.objection_context:
+    if decision.objection_context and not playbook_instructions:
         objection_upper = decision.objection_context.upper() if decision.objection_context else ""
 
         if "DIFFUSE:" in objection_upper and current_phase_is_late:
@@ -731,6 +780,7 @@ If the prospect asks something not covered here, say you'll have the team follow
 {mirror_variation_instructions}
 {probe_instructions}
 {ownership_instructions}
+{playbook_instructions}
 {objection_instructions}
 {break_glass_instructions}
 {transition_instructions}

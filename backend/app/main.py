@@ -210,11 +210,12 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             turns_in_current_phase=getattr(db_session, 'turns_in_current_phase', 0) or 0,
             deepest_emotional_depth=getattr(db_session, 'deepest_emotional_depth', 'surface') or 'surface',
             objection_diffusion_step=getattr(db_session, 'objection_diffusion_step', 0) or 0,
+            ownership_substep=getattr(db_session, 'ownership_substep', 0) or 0,
         )
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
         result = {
-            "response_text": "Hmm, tell me more about that.",
+            "response_text": "How has that been playing out for you day-to-day?",
             "new_phase": current_phase.value,
             "new_profile_json": db_session.prospect_profile or "{}",
             "thought_log_json": json.dumps({"error": str(e)}),
@@ -225,6 +226,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             "turns_in_current_phase": getattr(db_session, 'turns_in_current_phase', 0) or 0,
             "deepest_emotional_depth": getattr(db_session, 'deepest_emotional_depth', 'surface') or 'surface',
             "objection_diffusion_step": getattr(db_session, 'objection_diffusion_step', 0) or 0,
+            "ownership_substep": getattr(db_session, 'ownership_substep', 0) or 0,
         }
 
     # Update session state
@@ -241,6 +243,8 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         db_session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
     if hasattr(db_session, 'objection_diffusion_step'):
         db_session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
+    if hasattr(db_session, 'ownership_substep'):
+        db_session.ownership_substep = result.get("ownership_substep", 0)
 
     # Append thought log
     try:

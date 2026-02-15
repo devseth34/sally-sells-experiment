@@ -34,6 +34,7 @@ class DBSession(Base):
     turns_in_current_phase = Column(Integer, default=0)
     deepest_emotional_depth = Column(String, default="surface")
     objection_diffusion_step = Column(Integer, default=0)
+    ownership_substep = Column(Integer, default=0)
     prospect_profile = Column(Text, default="{}")
     thought_logs = Column(Text, default="[]")
     escalation_sent = Column(String, nullable=True)
@@ -61,6 +62,7 @@ def init_db():
             "turns_in_current_phase": "ALTER TABLE sessions ADD COLUMN turns_in_current_phase INTEGER DEFAULT 0",
             "deepest_emotional_depth": "ALTER TABLE sessions ADD COLUMN deepest_emotional_depth VARCHAR DEFAULT 'surface'",
             "objection_diffusion_step": "ALTER TABLE sessions ADD COLUMN objection_diffusion_step INTEGER DEFAULT 0",
+            "ownership_substep": "ALTER TABLE sessions ADD COLUMN ownership_substep INTEGER DEFAULT 0",
         }
         for col_name, sql in migrations.items():
             if col_name not in existing_columns:

@@ -104,6 +104,7 @@ def make_decision(
     turns_in_current_phase: int = 0,
     deepest_emotional_depth: str = "surface",
     objection_diffusion_step: int = 0,
+    ownership_substep: int = 0,
 ) -> DecisionOutput:
     """
     The core decision function. Pure logic, no LLM.
@@ -194,6 +195,16 @@ def make_decision(
                     )
             except ValueError:
                 pass
+
+    # 3b. Confusion routing — prospect doesn't understand what Sally is saying
+    if comprehension.user_intent == UserIntent.CONFUSION:
+        return DecisionOutput(
+            action="STAY",
+            target_phase=current_phase.value,
+            reason=f"Prospect is confused. Triggering confusion_recovery playbook.",
+            objection_context="PLAYBOOK:confusion_recovery",
+            retry_count=retry_count,  # NOT incremented — confusion is Sally's fault
+        )
 
     # 4. Gap Builder constraint check
     gap_ok, gap_reason = check_gap_builder_constraint(current_phase, profile)
@@ -291,6 +302,30 @@ def make_decision(
             retry_count=0,
         )
 
+    # 6b. OWNERSHIP substep enforcement — prevent looping within OWNERSHIP sub-states
+    if current_phase == NepqPhase.OWNERSHIP:
+        # Hard ceiling: after 8 turns in OWNERSHIP, force free workshop offer
+        if turns_in_current_phase >= 8:
+            return DecisionOutput(
+                action="STAY",
+                target_phase=current_phase.value,
+                reason=f"OWNERSHIP hard ceiling: {turns_in_current_phase} turns. Playbook: ownership_ceiling.",
+                objection_context="PLAYBOOK:ownership_ceiling",
+                retry_count=retry_count,
+            )
+
+        # Substep 2 (SELF_PERSUASION): if prospect still can't self-persuade, force bridge
+        if ownership_substep == 2:
+            self_persuaded = comprehension.exit_evaluation.criteria.get("prospect_self_persuaded")
+            if self_persuaded and not self_persuaded.met:
+                return DecisionOutput(
+                    action="STAY",
+                    target_phase=current_phase.value,
+                    reason=f"Self-persuasion failed at substep 2. Playbook: bridge_with_their_words.",
+                    objection_context="PLAYBOOK:bridge_with_their_words",
+                    retry_count=retry_count,
+                )
+
     # 7. Probing trigger — force deeper engagement for thin/surface responses
     #    Only fires when exit criteria are NOT fully met (all_criteria_met was False above).
     #    PROBE increments retry_count so Break Glass can eventually rescue stuck conversations.
@@ -368,3 +403,75 @@ def make_decision(
         reason=f"Exit criteria not fully met: {criteria_met}/{criteria_total} ({criteria_status_str}). Missing: {exit_eval.missing_info}",
         retry_count=retry_count + 1,
     )
+
+
+def detect_situation(
+    comprehension: ComprehensionOutput,
+    decision: DecisionOutput,
+    current_phase: NepqPhase,
+    profile: ProspectProfile,
+    ownership_substep: int = 0,
+    consecutive_no_new_info: int = 0,
+    turns_in_current_phase: int = 0,
+    objection_diffusion_step: int = 0,
+) -> str | None:
+    """
+    Situation Playbook detector.
+
+    Runs AFTER make_decision() to detect micro-situations that need specific
+    playbooks. Returns a playbook name or None for default behavior.
+
+    Priority-ordered: first match wins. Some high-priority situations
+    (confusion, ownership ceiling, bridge) are already handled as early
+    returns inside make_decision() — this function catches additional
+    situations that overlay on the default decision.
+    """
+    # Skip if decision already has a playbook assigned (from early returns)
+    if decision.objection_context and "PLAYBOOK:" in (decision.objection_context or ""):
+        return None
+
+    # Skip if decision is ADVANCE or END (don't override phase transitions)
+    if decision.action in ("ADVANCE", "END"):
+        return None
+
+    # 1. Hard no in late phases
+    if (comprehension.user_intent == UserIntent.PUSHBACK
+            and comprehension.emotional_intensity == "high"
+            and current_phase in LATE_PHASES):
+        return "graceful_exit"
+
+    # 2. Prospect already sold themselves (spontaneous buy signal)
+    if current_phase in {NepqPhase.CONSEQUENCE, NepqPhase.OWNERSHIP}:
+        exact_words_lower = " ".join(comprehension.prospect_exact_words).lower()
+        if (comprehension.user_intent in (UserIntent.AGREEMENT, UserIntent.DIRECT_ANSWER)
+                and comprehension.emotional_intensity in ("medium", "high")
+                and any(signal in exact_words_lower for signal in
+                        ["need to do something", "can't keep", "what do i need", "i'm ready", "let's do it"])):
+            return "dont_oversell"
+
+    # 3. Same objection repeated after full diffusion
+    if (current_phase in LATE_PHASES
+            and comprehension.objection_diffusion_status == "repeated"):
+        return "graceful_alternative"
+
+    # 4. Prospect said yes to isolation → resolve and close
+    if (current_phase == NepqPhase.OWNERSHIP
+            and objection_diffusion_step >= 2
+            and comprehension.user_intent == UserIntent.AGREEMENT
+            and comprehension.objection_type == ObjectionType.NONE):
+        return "resolve_and_close"
+
+    # 5. Prospect disengaging (3+ consecutive thin/flat turns)
+    if (consecutive_no_new_info >= 3
+            and comprehension.response_richness == "thin"
+            and comprehension.energy_level in ("low/flat",)):
+        return "energy_shift"
+
+    # 6. Thin response in critical phase (enhance the default PROBE)
+    if (comprehension.response_richness == "thin"
+            and comprehension.emotional_depth == "surface"
+            and current_phase in CRITICAL_PHASES
+            and decision.action == "PROBE"):
+        return "specific_probe"
+
+    return None

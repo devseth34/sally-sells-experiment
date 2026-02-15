@@ -31,6 +31,7 @@ class UserIntent(str, Enum):
     SMALL_TALK = "SMALL_TALK"
     AGREEMENT = "AGREEMENT"
     PUSHBACK = "PUSHBACK"
+    CONFUSION = "CONFUSION"
 
 
 class ProspectProfile(BaseModel):

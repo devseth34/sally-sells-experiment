@@ -22,7 +22,7 @@ from app.models import (
     UserIntent,
 )
 from app.layers.comprehension import run_comprehension
-from app.layers.decision import make_decision
+from app.layers.decision import make_decision, detect_situation
 from app.layers.response import generate_response
 
 logger = logging.getLogger("sally.engine")
@@ -101,6 +101,7 @@ class SallyEngine:
         turns_in_current_phase: int = 0,
         deepest_emotional_depth: str = "surface",
         objection_diffusion_step: int = 0,
+        ownership_substep: int = 0,
     ) -> dict:
         """
         Process a single conversation turn through all three layers.
@@ -118,6 +119,7 @@ class SallyEngine:
                 "turns_in_current_phase": int,
                 "deepest_emotional_depth": str,
                 "objection_diffusion_step": int,
+                "ownership_substep": int,
             }
         """
 
@@ -181,6 +183,57 @@ class SallyEngine:
         if comprehension.user_intent == UserIntent.AGREEMENT and objection_diffusion_step > 0:
             objection_diffusion_step = 0
 
+        # Track ownership substep progression
+        if current_phase == NepqPhase.OWNERSHIP:
+            original_substep = ownership_substep
+            exit_eval = comprehension.exit_evaluation
+
+            commitment_asked = exit_eval.criteria.get("commitment_question_asked")
+            self_persuaded = exit_eval.criteria.get("prospect_self_persuaded")
+            price_stated = exit_eval.criteria.get("price_stated")
+            definitive_response = exit_eval.criteria.get("definitive_response")
+
+            # Initialize: 0 → 1 on first OWNERSHIP turn
+            if ownership_substep == 0:
+                ownership_substep = 1
+
+            # 1 → 2: commitment question asked and prospect gave positive response
+            if ownership_substep == 1 and commitment_asked and commitment_asked.met:
+                if comprehension.user_intent in (UserIntent.AGREEMENT, UserIntent.DIRECT_ANSWER):
+                    ownership_substep = 2
+
+            # 2 → 3 (BRIDGE): self-persuasion failed (thin/vague/confused response)
+            if ownership_substep == 2 and self_persuaded and not self_persuaded.met:
+                if comprehension.response_richness == "thin" or comprehension.user_intent == UserIntent.CONFUSION:
+                    ownership_substep = 3
+
+            # 2 → 4: self-persuasion succeeded
+            if ownership_substep == 2 and self_persuaded and self_persuaded.met:
+                ownership_substep = 4
+
+            # 3 → 4: bridge auto-advance (bridge is ONE attempt, advance next turn)
+            # Only if we ENTERED this turn as substep 3 (not if we just set it)
+            if original_substep == 3:
+                ownership_substep = 4
+
+            # 4 → 5 or 6: after price stated, based on response
+            if ownership_substep == 4 and price_stated and price_stated.met:
+                if comprehension.objection_type != ObjectionType.NONE:
+                    ownership_substep = 5  # Objection handling
+                elif comprehension.user_intent == UserIntent.AGREEMENT:
+                    ownership_substep = 6  # Close
+                elif definitive_response and definitive_response.met:
+                    ownership_substep = 6  # Definitive response
+
+            # 5 → 6: objection resolved or prospect agreed
+            if ownership_substep == 5:
+                if comprehension.objection_diffusion_status == "resolved":
+                    ownership_substep = 6
+                elif comprehension.user_intent == UserIntent.AGREEMENT:
+                    ownership_substep = 6
+
+            logger.info(f"[Turn {turn_number}] Ownership substep: {original_substep} → {ownership_substep}")
+
         # Increment turns in current phase
         turns_in_current_phase += 1
 
@@ -190,7 +243,8 @@ class SallyEngine:
                      f"richness={comprehension.response_richness}, "
                      f"depth={comprehension.emotional_depth}, "
                      f"deepest_depth={deepest_emotional_depth}, "
-                     f"diffusion_step={objection_diffusion_step}")
+                     f"diffusion_step={objection_diffusion_step}, "
+                     f"ownership_substep={ownership_substep}")
 
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
@@ -205,9 +259,31 @@ class SallyEngine:
             turns_in_current_phase=turns_in_current_phase,
             deepest_emotional_depth=deepest_emotional_depth,
             objection_diffusion_step=objection_diffusion_step,
+            ownership_substep=ownership_substep,
         )
         logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
                      f"target_phase={decision.target_phase}, reason={decision.reason}")
+
+        # Situation Playbook detection — overlay on default decision
+        playbook = detect_situation(
+            comprehension=comprehension,
+            decision=decision,
+            current_phase=current_phase,
+            profile=profile,
+            ownership_substep=ownership_substep,
+            consecutive_no_new_info=consecutive_no_new_info,
+            turns_in_current_phase=turns_in_current_phase,
+            objection_diffusion_step=objection_diffusion_step,
+        )
+        if playbook:
+            from app.playbooks import PLAYBOOKS
+            pb = PLAYBOOKS.get(playbook, {})
+            decision.objection_context = f"PLAYBOOK:{playbook}"
+            if pb.get("overrides_action"):
+                decision.action = "STAY"
+                decision.target_phase = current_phase.value
+            decision.reason = f"{decision.reason} | Playbook: {playbook}"
+            logger.info(f"[Turn {turn_number}] Situation detected: {playbook}")
 
         # Build emotional context from Layer 1 for Layer 3
         # Include exit criteria for OWNERSHIP sequencing
@@ -224,6 +300,7 @@ class SallyEngine:
             "response_richness": comprehension.response_richness,
             "emotional_depth": comprehension.emotional_depth,
             "exit_evaluation_criteria": exit_criteria_for_l3,
+            "ownership_substep": ownership_substep,
         }
         logger.info(f"[Turn {turn_number}] Emotional context: tone={comprehension.emotional_tone}, "
                      f"energy={comprehension.energy_level}, "
@@ -262,6 +339,7 @@ class SallyEngine:
         if phase_changed:
             turns_in_current_phase = 0
             objection_diffusion_step = 0
+            ownership_substep = 0
 
         return {
             "response_text": response_text,
@@ -275,4 +353,5 @@ class SallyEngine:
             "turns_in_current_phase": turns_in_current_phase,
             "deepest_emotional_depth": deepest_emotional_depth,
             "objection_diffusion_step": objection_diffusion_step,
+            "ownership_substep": ownership_substep,
         }

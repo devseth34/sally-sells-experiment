@@ -94,6 +94,15 @@ OBJECTION DIFFUSION STATUS (only relevant in OWNERSHIP phase):
    - "isolated": Sally isolated the objection from the desire and prospect confirmed they still want it
    - "resolved": Prospect agreed to move forward despite the objection
    - "repeated": Prospect raised the SAME objection again after Sally's diffusion attempt
+
+12. CONFUSION DETECTION — When the prospect expresses confusion about what Sally is saying or asking:
+   - "I don't understand", "what do you mean", "you lost me", "huh?", "what?" (in context of not understanding) → user_intent = "CONFUSION"
+   - "all of it" when asked "what part" → "CONFUSION"
+   - "i'm confused", "that doesn't make sense" → "CONFUSION"
+   - IMPORTANT: CONFUSION is NOT the same as PUSHBACK. Pushback means they disagree or resist.
+   Confusion means they genuinely do not understand what Sally is asking or saying.
+   - If they seem confused but are also pushing back, classify as CONFUSION (clarity takes priority,
+   because Sally needs to clarify before anything else can happen).
 """
 
 
@@ -144,7 +153,7 @@ LATEST PROSPECT MESSAGE:
 
 Produce your analysis as a JSON object with this EXACT structure:
 {{
-    "user_intent": "DIRECT_ANSWER" | "DEFLECTION" | "QUESTION" | "OBJECTION" | "SMALL_TALK" | "AGREEMENT" | "PUSHBACK",
+    "user_intent": "DIRECT_ANSWER" | "DEFLECTION" | "QUESTION" | "OBJECTION" | "SMALL_TALK" | "AGREEMENT" | "PUSHBACK" | "CONFUSION",
     "emotional_tone": "<one or two words: engaged, skeptical, frustrated, defensive, excited, neutral, warm, guarded, etc.>",
     "emotional_intensity": "low" | "medium" | "high",
     "objection_type": "PRICE" | "TIMING" | "AUTHORITY" | "NEED" | "NONE",
