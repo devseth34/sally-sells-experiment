@@ -133,24 +133,27 @@ FORBIDDEN_WORDS = [
     "leverage", "synergy", "paradigm", "disrupt", "innovate",
 ]
 
-# Phrases that should never appear
+# Phrases that should never appear — ordered LONGEST first so multi-word
+# phrases are checked before their single-word substrings.
 FORBIDDEN_PHRASES = [
-    "that's a great question",
-    "great point",
-    "i appreciate you sharing",
-    "absolutely",
-    "i completely understand",
     "that's completely understandable",
-    "that makes total sense",
+    "i appreciate you sharing",
     "that makes a lot of sense",
+    "that makes total sense",
+    "that's a great question",
+    "i completely understand",
+    "happens to the best of us",
+    "that's interesting",
+    "great point",
     "i hear you",
     "no worries",
-    "happens to the best of us",
-    "got it",
+    "absolutely",
     "tell me more",
-    "that's interesting",
-    "interesting",
+    "got it",
 ]
+# NOTE: "interesting" was removed as a standalone forbidden word because
+# \binteresting\b matches inside legitimate phrases like
+# "the most interesting thing" → "the most  thing" (garbled).
 
 
 def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: bool = False) -> str:
@@ -193,9 +196,16 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
         if re.search(pattern, text_lower):
             logger.warning(f"Circuit breaker: forbidden phrase '{phrase}' detected")
             # Strip the phrase and continue — don't nuke the whole response
-            response_text = re.sub(pattern, "", response_text, flags=re.IGNORECASE).strip()
-            # Clean up double spaces or leading punctuation
-            response_text = re.sub(r"\s+", " ", response_text).strip(" .,!").strip()
+            response_text = re.sub(pattern, "", response_text, flags=re.IGNORECASE)
+            # Clean orphaned punctuation sequences left after removal (e.g. ", ." or ". ,")
+            response_text = re.sub(r'[,\s]*\.\s*', '. ', response_text)  # collapse ", ." → ". "
+            response_text = re.sub(r'\.\s*\.', '.', response_text)       # collapse ".." → "."
+            response_text = re.sub(r',\s*,', ',', response_text)         # collapse ",," → ","
+            response_text = re.sub(r'\s+', ' ', response_text)           # collapse whitespace
+            response_text = re.sub(r'\s+([.,!?])', r'\1', response_text) # remove space before punct
+            response_text = response_text.strip(' .,!').strip()
+            # Update lowered text for next iteration
+            text_lower = response_text.lower()
 
     # Check 4: Pitching before Consequence
     early_phases = {
@@ -224,6 +234,12 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
                 break
         if trimmed:
             response_text = "".join(trimmed).strip()
+
+    # Safety net: if stripping left us with a garbled or empty response, use fallback
+    clean_words = [w for w in response_text.split() if len(w) > 1 or w.lower() in ("i", "a")]
+    if len(clean_words) < 4:
+        logger.warning("Circuit breaker: response too short after cleaning, using fallback")
+        return "How has that been playing out for you day-to-day?"
 
     return response_text
 

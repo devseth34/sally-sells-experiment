@@ -47,16 +47,18 @@ You are NOT the salesperson. You analyze each prospect message and produce a str
 CRITICAL RULES:
 1. Only extract information the prospect EXPLICITLY stated. Never infer or assume.
 2. For pain_points and frustrations, only include what the PROSPECT said, not what the salesperson suggested.
-3. Be STRICT and CONSERVATIVE with confidence scores:
-   - 0-30%: Prospect hasn't addressed the exit criteria at all
-   - 31-50%: Prospect gave vague or partial answers that touch on exit criteria
-   - 51-70%: Prospect gave a clear answer that meets SOME but not ALL exit criteria
-   - 71-85%: Prospect gave clear, specific answers meeting MOST exit criteria
-   - 86-100%: ALL exit criteria are clearly met with concrete evidence
-4. Don't inflate confidence just because the prospect responded. A response like "yeah" or "ok" barely moves the needle.
-5. Look at the FULL conversation + profile together. If previous turns already gathered some info, factor that in.
+3. CONFIDENCE SCORING — assess CUMULATIVELY across the ENTIRE conversation + existing profile:
+   - 0-25%: Prospect hasn't addressed ANY exit criteria yet (first message, off-topic, or pure small talk)
+   - 26-45%: Prospect has addressed ONE exit criterion partially or vaguely
+   - 46-65%: Prospect has addressed at LEAST TWO exit criteria with some substance (even if brief)
+   - 66-80%: Prospect has addressed MOST exit criteria clearly. Short answers count IF they contain real info (e.g. "I'm a dev" = role provided, even if brief)
+   - 81-100%: ALL exit criteria are clearly met with concrete evidence
+4. IMPORTANT: Short answers CAN be high-confidence if they contain real information.
+   "I'm a dev at a fintech startup, looking into AI for automation" in ONE message = role + company context + reason = most CONNECTION criteria MET. That's 66%+ even though it's one sentence.
+   "yeah" or "ok" with no new info = barely moves the needle.
+5. ALWAYS look at the existing profile fields. If the profile already has role, company, etc. from earlier turns, those criteria ARE MET. Don't re-penalize for information already gathered.
 6. Objection detection: "too expensive" = PRICE, "need to ask my boss" = AUTHORITY, "not sure we need this" = NEED, "maybe next quarter" = TIMING.
-7. When the prospect gives SHORT or VAGUE answers, confidence should stay LOW. They haven't done the work yet.
+7. The goal is ACCURATE assessment, not conservative assessment. Under-scoring is just as bad as over-scoring because it traps the conversation in a loop.
 """
 
 
@@ -128,7 +130,11 @@ PROFILE FIELDS YOU CAN UPDATE:
 
 CRITICAL: For list fields (pain_points, frustrations, tools_mentioned, success_metrics), provide ONLY the NEW items to add, not the full list.
 
-IMPORTANT: The exit_evaluation.confidence should reflect how well ALL the exit criteria are met CUMULATIVELY across the entire conversation, not just this one message. Look at the full profile + this message together.
+IMPORTANT: The exit_evaluation.confidence MUST reflect CUMULATIVE progress across the ENTIRE conversation, not just the latest message.
+- Check each exit criterion against BOTH the existing profile AND the new message
+- If the profile already has "role" filled from a previous turn, that criterion IS met regardless of the current message
+- Count how many exit criteria are satisfied total, then score accordingly
+- A conversation where 2 of 3 exit criteria are already met should score 66%+, even if the latest message only addresses the third
 
 Return ONLY the JSON object. No markdown, no explanation."""
 

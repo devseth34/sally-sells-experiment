@@ -17,6 +17,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
+from http.client import HTTPResponse
 
 from dotenv import load_dotenv
 
@@ -138,6 +139,23 @@ def _build_conversion_row(conversion_data: dict) -> list:
     ]
 
 
+class _PostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow 301/302/303/307/308 redirects while preserving POST method + body."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Build a new POST request to the redirect URL (stdlib default converts to GET)
+        new_req = urllib.request.Request(
+            newurl,
+            data=req.data,
+            headers={k: v for k, v in req.header_items()},
+            method="POST",
+        )
+        return new_req
+
+
+_opener = urllib.request.build_opener(_PostRedirectHandler)
+
+
 def _post_to_sheets(payload: dict) -> None:
     url = _get_webhook_url()
     if not url:
@@ -152,11 +170,11 @@ def _post_to_sheets(payload: dict) -> None:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _opener.open(req, timeout=15) as resp:
             body = resp.read().decode("utf-8")
-            logger.info(f"Sheets webhook response: {resp.status} — {body}")
+            logger.info(f"Sheets webhook response: {resp.status} - {body}")
     except urllib.error.HTTPError as e:
-        logger.error(f"Sheets webhook HTTP error: {e.code} — {e.read().decode('utf-8', errors='replace')}")
+        logger.error(f"Sheets webhook HTTP error: {e.code} - {e.read().decode('utf-8', errors='replace')}")
     except Exception as e:
         logger.error(f"Sheets webhook error: {e}")
 
