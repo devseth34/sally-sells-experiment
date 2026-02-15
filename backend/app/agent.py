@@ -155,13 +155,26 @@ class SallyEngine:
         logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
                      f"target_phase={decision.target_phase}, reason={decision.reason}")
 
-        # Layer 3: Response (with circuit breaker)
+        # Build emotional context from Layer 1 for Layer 3
+        emotional_context = {
+            "prospect_exact_words": comprehension.prospect_exact_words,
+            "emotional_cues": comprehension.emotional_cues,
+            "energy_level": comprehension.energy_level,
+            "emotional_tone": comprehension.emotional_tone,
+            "emotional_intensity": comprehension.emotional_intensity,
+        }
+        logger.info(f"[Turn {turn_number}] Emotional context: tone={comprehension.emotional_tone}, "
+                     f"energy={comprehension.energy_level}, "
+                     f"mirror_phrases={comprehension.prospect_exact_words}")
+
+        # Layer 3: Response (with circuit breaker + emotional intelligence)
         logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase}")
         response_text = generate_response(
             decision=decision,
             user_message=user_message,
             conversation_history=conversation_history,
             profile=profile,
+            emotional_context=emotional_context,
         )
         logger.info(f"[Turn {turn_number}] Layer 3 result: '{response_text[:80]}...'")
 

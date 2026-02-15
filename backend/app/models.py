@@ -92,6 +92,7 @@ class ComprehensionOutput(BaseModel):
     """
     user_intent: UserIntent
     emotional_tone: str = Field(..., description="e.g. engaged, skeptical, frustrated, defensive, excited")
+    emotional_intensity: str = Field(default="medium", description="low, medium, or high — how strongly they're feeling it")
 
     objection_type: ObjectionType = ObjectionType.NONE
     objection_detail: Optional[str] = None
@@ -99,6 +100,11 @@ class ComprehensionOutput(BaseModel):
     profile_updates: dict = Field(default_factory=dict, description="Key-value pairs to update on ProspectProfile")
 
     exit_evaluation: PhaseExitEvaluation
+
+    # Empathy & mirroring intelligence
+    prospect_exact_words: List[str] = Field(default_factory=list, description="2-3 exact phrases/sentences from the prospect worth mirroring back")
+    emotional_cues: List[str] = Field(default_factory=list, description="Specific emotional signals detected: frustration, pride, excitement, anxiety, etc. with context")
+    energy_level: str = Field(default="neutral", description="The prospect's conversational energy: low/flat, neutral, warm, high/excited")
 
     summary: str = Field(..., description="One-sentence summary of what happened this turn")
 
