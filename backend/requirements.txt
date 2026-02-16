@@ -1,9 +1,12 @@
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 psycopg2-binary
+pydantic
 anthropic
 stripe
 python-dotenv
 google-auth
+google-generativeai
 requests
+eval-type-backport
