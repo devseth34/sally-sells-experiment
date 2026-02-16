@@ -101,6 +101,15 @@ export async function endSession(sessionId: string): Promise<void> {
   if (!res.ok) throw new Error(`Failed to end session: ${res.statusText}`);
 }
 
+/**
+ * Fire-and-forget session end via sendBeacon — survives tab close/navigation.
+ * Use this in beforeunload/pagehide handlers where fetch() may be cancelled.
+ */
+export function endSessionBeacon(sessionId: string): void {
+  const url = `${API_BASE}/sessions/${sessionId}/end`;
+  navigator.sendBeacon(url);
+}
+
 export interface AppConfig {
   stripe_payment_link: string;
   stripe_publishable_key: string;

@@ -6,7 +6,7 @@ import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
-import { createSession, sendMessage } from "../lib/api";
+import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
 import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse } from "../lib/api";
 
@@ -25,6 +25,27 @@ export function ChatPage() {
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const sessionEndedRef = useRef(false);
+
+  // Keep refs in sync with state so event listeners see current values
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+  useEffect(() => { sessionEndedRef.current = sessionEnded; }, [sessionEnded]);
+
+  // End active session when user closes/navigates away from the tab
+  useEffect(() => {
+    const handleUnload = () => {
+      if (sessionIdRef.current && !sessionEndedRef.current) {
+        endSessionBeacon(sessionIdRef.current);
+      }
+    };
+    window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("pagehide", handleUnload);
+      window.removeEventListener("beforeunload", handleUnload);
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -91,7 +112,15 @@ export function ChatPage() {
     }
   };
 
-  const handleNewSession = () => {
+  const handleNewSession = async () => {
+    // End the current session if it's still active
+    if (sessionId && !sessionEnded) {
+      try {
+        await endSession(sessionId);
+      } catch (err) {
+        console.error("Failed to end previous session:", err);
+      }
+    }
     setSessionId(null);
     setMessages([]);
     setCurrentPhase("CONNECTION");
