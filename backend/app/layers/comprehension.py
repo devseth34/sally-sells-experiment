@@ -193,7 +193,7 @@ _gemini_configured = False
 def _ensure_gemini_configured():
     global _gemini_configured
     if not _gemini_configured:
-        load_dotenv(_ENV_PATH, override=True)
+        # load_dotenv removed - database.py handles this
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError(f"GEMINI_API_KEY not found. Checked .env at: {_ENV_PATH}")

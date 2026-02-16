@@ -30,7 +30,7 @@ _client: Anthropic | None = None
 def _get_client() -> Anthropic:
     global _client
     if _client is None:
-        load_dotenv(_ENV_PATH, override=True)
+        # load_dotenv removed - database.py handles this
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError(f"ANTHROPIC_API_KEY not found. Checked .env at: {_ENV_PATH}")
