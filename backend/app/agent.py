@@ -10,6 +10,7 @@ Orchestrates the three layers:
 
 import json
 import logging
+import time
 from typing import Optional
 
 from app.schemas import NepqPhase
@@ -49,7 +50,7 @@ class SallyEngine:
         return (
             "Hey there! I'm Sally from 100x. "
             "Super curious to learn about you. "
-            "What do you do, and what brought you here today?"
+            "What brought you here today?"
         )
 
     @staticmethod
@@ -131,14 +132,17 @@ class SallyEngine:
             profile = ProspectProfile()
 
         # Layer 1: Comprehension
+        turn_start = time.monotonic()
         logger.info(f"[Turn {turn_number}] Layer 1: Analyzing message in {current_phase.value}")
+        l1_start = time.monotonic()
         comprehension = run_comprehension(
             current_phase=current_phase,
             user_message=user_message,
             conversation_history=conversation_history,
             prospect_profile=profile,
         )
-        logger.info(f"[Turn {turn_number}] Layer 1 result: intent={comprehension.user_intent}, "
+        l1_ms = (time.monotonic() - l1_start) * 1000
+        logger.info(f"[Turn {turn_number}] Layer 1 result ({l1_ms:.0f}ms): intent={comprehension.user_intent}, "
                      f"objection={comprehension.objection_type}, "
                      f"criteria={comprehension.exit_evaluation.criteria_met_count}/{comprehension.exit_evaluation.criteria_total_count}, "
                      f"new_info={comprehension.new_information}")
@@ -248,6 +252,7 @@ class SallyEngine:
 
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
+        l2_start = time.monotonic()
         decision = make_decision(
             current_phase=current_phase,
             comprehension=comprehension,
@@ -261,8 +266,10 @@ class SallyEngine:
             objection_diffusion_step=objection_diffusion_step,
             ownership_substep=ownership_substep,
         )
-        logger.info(f"[Turn {turn_number}] Layer 2 result: action={decision.action}, "
-                     f"target_phase={decision.target_phase}, reason={decision.reason}")
+        l2_ms = (time.monotonic() - l2_start) * 1000
+        logger.info(f"[Turn {turn_number}] Layer 2 result ({l2_ms:.0f}ms): action={decision.action}, "
+                     f"target_phase={decision.target_phase}, reason={decision.reason}"
+                     f"{f', probe_target={decision.probe_target}' if decision.probe_target else ''}")
 
         # Situation Playbook detection — overlay on default decision
         playbook = detect_situation(
@@ -291,6 +298,12 @@ class SallyEngine:
         for cid, cresult in comprehension.exit_evaluation.criteria.items():
             exit_criteria_for_l3[cid] = {"met": cresult.met, "evidence": cresult.evidence}
 
+        # Build missing criteria guidance for Layer 3
+        missing_criteria_guidance = []
+        for cid, cresult in comprehension.exit_evaluation.criteria.items():
+            if not cresult.met:
+                missing_criteria_guidance.append(cid)
+
         emotional_context = {
             "prospect_exact_words": comprehension.prospect_exact_words,
             "emotional_cues": comprehension.emotional_cues,
@@ -301,7 +314,10 @@ class SallyEngine:
             "emotional_depth": comprehension.emotional_depth,
             "exit_evaluation_criteria": exit_criteria_for_l3,
             "ownership_substep": ownership_substep,
+            "missing_criteria": missing_criteria_guidance,
+            "missing_info": comprehension.exit_evaluation.missing_info,
         }
+
         logger.info(f"[Turn {turn_number}] Emotional context: tone={comprehension.emotional_tone}, "
                      f"energy={comprehension.energy_level}, "
                      f"mirror_phrases={comprehension.prospect_exact_words}")
@@ -309,6 +325,7 @@ class SallyEngine:
         # Layer 3: Response (with circuit breaker + emotional intelligence)
         is_probe = decision.action == "PROBE"
         logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase} (probe={is_probe})")
+        l3_start = time.monotonic()
         response_text = generate_response(
             decision=decision,
             user_message=user_message,
@@ -317,7 +334,10 @@ class SallyEngine:
             emotional_context=emotional_context,
             probe_mode=is_probe,
         )
-        logger.info(f"[Turn {turn_number}] Layer 3 result: '{response_text[:80]}...'")
+        l3_ms = (time.monotonic() - l3_start) * 1000
+        total_ms = (time.monotonic() - turn_start) * 1000
+        logger.info(f"[Turn {turn_number}] Layer 3 result ({l3_ms:.0f}ms): '{response_text[:80]}...'")
+        logger.info(f"[Turn {turn_number}] LATENCY SUMMARY: L1={l1_ms:.0f}ms | L2={l2_ms:.0f}ms | L3={l3_ms:.0f}ms | Total={total_ms:.0f}ms")
 
         # Build ThoughtLog
         thought_log = ThoughtLog(

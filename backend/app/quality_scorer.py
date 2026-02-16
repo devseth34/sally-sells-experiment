@@ -15,14 +15,11 @@ Dimensions scored:
 import json
 import os
 import logging
-from pathlib import Path
-from dotenv import load_dotenv
 from anthropic import Anthropic
 
-from app.models import ConversationQualityScore
+# dotenv is loaded once in database.py (first import in main.py)
 
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_ENV_PATH, override=True)
+from app.models import ConversationQualityScore
 
 logger = logging.getLogger("sally.quality")
 

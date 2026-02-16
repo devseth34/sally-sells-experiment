@@ -332,22 +332,29 @@ def make_decision(
     richness = comprehension.response_richness
     depth = comprehension.emotional_depth
 
-    # Thin + surface = probe (regardless of phase)
+    # Find the first unmet criterion for probe targeting
+    first_unmet_criterion = None
+    for cid, cresult in exit_eval.criteria.items():
+        if not cresult.met:
+            first_unmet_criterion = cid
+            break
+
     if richness == "thin" and depth == "surface":
         return DecisionOutput(
             action="PROBE",
             target_phase=current_phase.value,
             reason=f"Prospect gave thin/surface response. Need to dig deeper. ({criteria_met}/{criteria_total} criteria met: {criteria_status_str})",
             retry_count=retry_count + 1,
+            probe_target=first_unmet_criterion,
         )
 
-    # Thin responses in critical phases = probe even if moderate emotional depth
     if richness == "thin" and current_phase in CRITICAL_PHASES:
         return DecisionOutput(
             action="PROBE",
             target_phase=current_phase.value,
             reason=f"Critical phase {current_phase.value} requires substantive engagement. Response too thin. ({criteria_met}/{criteria_total} criteria met: {criteria_status_str})",
             retry_count=retry_count + 1,
+            probe_target=first_unmet_criterion,
         )
 
     # 8. Repetition detection: if no new info for 2+ turns, pivot or force-advance
@@ -358,7 +365,7 @@ def make_decision(
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,
-                reason=f"Repetition detected: {consecutive_no_new_info} turns with no new info. {criteria_met}/{criteria_total} criteria met ({criteria_status_str}). Force-advancing to prevent loop.",
+                reason=f"Repetition detected: {consecutive_no_new_info} turns with no new info. {criteria_met}/{criteria_total} criteria met ({criteria_status_str}). Force-advancing.",
                 retry_count=0,
             )
         else:
@@ -368,6 +375,19 @@ def make_decision(
                 reason=f"Repetition detected: {consecutive_no_new_info} turns with no new info but only {criteria_met}/{criteria_total} criteria met. Trying a different angle.",
                 retry_count=retry_count + 1,
             )
+
+        if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
+            depth_sufficient = (
+                deepest_emotional_depth == "deep"
+                or (deepest_emotional_depth == "moderate" and turns_in_current_phase >= 3)
+            )
+            if not depth_sufficient:
+                return DecisionOutput(
+                    action="STAY",
+                    target_phase=current_phase.value,
+                    reason=f"Cannot advance to OWNERSHIP. Emotional depth: {deepest_emotional_depth}, turns: {turns_in_current_phase}. Need 'deep' or 'moderate' with 3+ turns.",
+                    retry_count=retry_count,
+                )
 
     # 9. Break Glass check (retry-based)
     max_retries = get_max_retries(current_phase)
@@ -461,8 +481,8 @@ def detect_situation(
             and comprehension.objection_type == ObjectionType.NONE):
         return "resolve_and_close"
 
-    # 5. Prospect disengaging (3+ consecutive thin/flat turns)
-    if (consecutive_no_new_info >= 3
+    # 5. Prospect disengaging (exactly 3 consecutive thin/flat turns — fires once)
+    if (consecutive_no_new_info == 3
             and comprehension.response_richness == "thin"
             and comprehension.energy_level in ("low/flat",)):
         return "energy_shift"

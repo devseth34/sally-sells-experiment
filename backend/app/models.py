@@ -164,6 +164,7 @@ class DecisionOutput(BaseModel):
     reason: str = Field(..., description="Human-readable explanation of the decision")
     objection_context: Optional[str] = None
     retry_count: int = 0
+    probe_target: Optional[str] = None
 
 
 class ThoughtLog(BaseModel):

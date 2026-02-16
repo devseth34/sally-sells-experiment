@@ -7,6 +7,7 @@ to a Google Sheet. Uses only stdlib (urllib) — no extra dependencies.
 Fire-and-forget via daemon threads so the main request is never blocked.
 If GOOGLE_SHEETS_WEBHOOK_URL is not set, logging is silently skipped.
 """
+from __future__ import annotations
 
 import json
 import logging
@@ -19,12 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from http.client import HTTPResponse
 
-from dotenv import load_dotenv
+# dotenv is loaded once in database.py (first import in main.py)
 
 logger = logging.getLogger("sally.sheets")
-
-_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(_ENV_PATH, override=True)
 
 MAX_CELL_CHARS = 49000  # Google Sheets cell limit is 50,000
 

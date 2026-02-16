@@ -4,6 +4,7 @@ Sally Sells — FastAPI Application
 Three-layer architecture: Comprehension -> Decision -> Response pipeline.
 Persists prospect profile and thought logs per session.
 """
+from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,7 +58,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
+    t0 = time.monotonic()
     init_db()
+    ms = (time.monotonic() - t0) * 1000
+    logger.info(f"on_startup: init_db completed in {ms:.0f}ms")
 
 
 @app.get("/")
