@@ -129,7 +129,7 @@ def build_comprehension_prompt(
     profile_fields_str = ", ".join(extraction_targets) if extraction_targets else "name, role, company, industry"
 
     prompt = f"""Analyze the prospect's latest message.
-
+##
 PHASE: {current_phase.value}
 PURPOSE: {phase_def.get('purpose', 'N/A')}
 
