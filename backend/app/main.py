@@ -63,6 +63,12 @@ def on_startup():
     ms = (time.monotonic() - t0) * 1000
     logger.info(f"on_startup: init_db completed in {ms:.0f}ms")
 
+    # Log whether optional integrations are configured
+    if os.getenv("GOOGLE_SHEETS_WEBHOOK_URL"):
+        logger.info("Google Sheets logging: ENABLED")
+    else:
+        logger.warning("Google Sheets logging: DISABLED (GOOGLE_SHEETS_WEBHOOK_URL not set)")
+
 
 @app.get("/")
 def root():

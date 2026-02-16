@@ -188,6 +188,9 @@ def fire_sheets_log(target: str, session_data: dict, messages_data: list[dict] |
     if not os.getenv("GOOGLE_SHEETS_WEBHOOK_URL"):
         return
 
+    session_id = session_data.get('id', session_data.get('sally_session_id', '?'))
+    logger.info(f"[Session {session_id}] Dispatching Sheets log ({target})...")
+
     def _worker():
         try:
             if target == "session":
@@ -201,9 +204,9 @@ def fire_sheets_log(target: str, session_data: dict, messages_data: list[dict] |
                 return
 
             _post_to_sheets({"target": target, "row": row})
-            logger.info(f"[Session {session_data.get('id', session_data.get('sally_session_id', '?'))}] Logged to Google Sheets ({target})")
+            logger.info(f"[Session {session_id}] Logged to Google Sheets ({target})")
         except Exception as e:
-            logger.error(f"[Session {session_data.get('id', session_data.get('sally_session_id', '?'))}] Sheets logging failed: {e}")
+            logger.error(f"[Session {session_id}] Sheets logging failed: {e}")
 
-    thread = threading.Thread(target=_worker, daemon=True)
+    thread = threading.Thread(target=_worker, daemon=False)
     thread.start()
