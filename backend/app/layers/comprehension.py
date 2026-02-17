@@ -218,26 +218,36 @@ def run_comprehension(
 
     _ensure_gemini_configured()
 
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash",
-        system_instruction=system_prompt,
-    )
+    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    
+    response = None
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(
+                model_name,
+                system_instruction=system_prompt,
+            )
 
-    response = model.generate_content(
-        user_prompt,
-        generation_config=genai.types.GenerationConfig(
-            max_output_tokens=1500,
-            temperature=0.1,
-        ),
-        safety_settings=[
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ],
-    )
-
-    raw_text = response.text.strip()
+            response = model.generate_content(
+                user_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=1500,
+                    temperature=0.1,
+                ),
+                safety_settings=[
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ],
+            )
+            logger.info(f"Layer 1 completed with model: {model_name}")
+            break  # Success, stop trying
+        except Exception as e:
+            logger.warning(f"Layer 1 model {model_name} failed: {e}")
+            if model_name == models_to_try[-1]:
+                raise  # Last model failed, re-raise
+            continue  # Try next model
 
     raw_text = response.text.strip()
 

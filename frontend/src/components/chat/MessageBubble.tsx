@@ -1,4 +1,3 @@
-
 import { getPhaseLabel, getPhaseColor } from "../../constants";
 import { formatTimestamp } from "../../lib/utils";
 import type { MessageResponse } from "../../lib/api";
@@ -9,16 +8,48 @@ interface MessageBubbleProps {
 
 /**
  * Renders message text with clickable links.
- * Detects URLs (https://...) and turns them into anchor tags.
+ * Stripe checkout URLs become a styled payment button.
+ * TidyCal URLs become a styled booking button.
+ * Other URLs render as regular clickable links.
  */
 function renderWithLinks(text: string) {
+  // Split on any URL, keeping the URL as a separate part
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const parts = text.split(urlRegex);
 
   return parts.map((part, i) => {
-    if (urlRegex.test(part)) {
-      // Reset lastIndex since we reuse the regex
-      urlRegex.lastIndex = 0;
+    // Stripe checkout link → green payment button
+    if (part.startsWith("https://checkout.stripe.com")) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 my-2 px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-500 no-underline font-semibold text-sm transition-colors"
+        >
+          💳 Secure Your Spot — $10,000
+        </a>
+      );
+    }
+
+    // TidyCal booking link → blue booking button
+    if (part.startsWith("https://tidycal.com")) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 my-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-500 no-underline font-semibold text-sm transition-colors"
+        >
+          📅 Book Free Workshop
+        </a>
+      );
+    }
+
+    // Any other URL → regular clickable link
+    if (/^https?:\/\//.test(part)) {
       return (
         <a
           key={i}
@@ -31,6 +62,7 @@ function renderWithLinks(text: string) {
         </a>
       );
     }
+
     return <span key={i}>{part}</span>;
   });
 }
