@@ -196,7 +196,7 @@ def _ensure_gemini_configured():
         # load_dotenv removed - database.py handles this
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise RuntimeError(f"GEMINI_API_KEY not found. Checked .env at: {_ENV_PATH}")
+            raise RuntimeError("GEMINI_API_KEY not found. Set it in your .env file or environment variables.")
         genai.configure(api_key=api_key)
         _gemini_configured = True
 

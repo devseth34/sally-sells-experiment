@@ -49,11 +49,6 @@ OBJECTION_ROUTING = {
 }
 
 # Late phases where objections are handled IN-PHASE (never reroute backward)
-# In OWNERSHIP: Sally handles objections directly using the objection routing patterns
-# PRICE -> "Remember what you said about the cost of NOT doing this?"
-# TIMING -> "What happens if you wait? You told me..."
-# NEED -> "You mentioned wanting X. This is how we get there."
-# AUTHORITY -> "Who else needs to be involved?"
 LATE_PHASES = {NepqPhase.OWNERSHIP, NepqPhase.COMMITMENT}
 
 
@@ -115,7 +110,7 @@ def make_decision(
     3. Gap Builder constraint check
     4. Minimum turn check -> STAY if below min_turns (does NOT count as retry)
     5. Check exit criteria -> advance if all met (checked BEFORE probe)
-    6. Emotional depth gate -> block CONSEQUENCE->OWNERSHIP without deep engagement
+    6. Emotional depth gate -> block CONSEQUENCE->OWNERSHIP (with softened fallback)
     7. Probing trigger -> PROBE for thin/surface responses (only when criteria NOT all met)
     8. Check repetition -> pivot or advance if no new info for 2+ turns
     9. Check retry count -> Break Glass if exceeded
@@ -230,8 +225,6 @@ def make_decision(
         )
 
     # === Exit criteria evaluation (CHECKLIST-BASED) — checked BEFORE probe ===
-    # This ensures that when all criteria are met, Sally advances even if the
-    # response was thin. PROBE only fires when criteria are NOT fully met.
 
     # 6. Exit criteria evaluation
     exit_eval = comprehension.exit_evaluation
@@ -248,14 +241,23 @@ def make_decision(
     criteria_status_str = ", ".join(criteria_summary) if criteria_summary else "no criteria"
 
     if all_criteria_met:
-        # 6a. Emotional depth gate: CONSEQUENCE -> OWNERSHIP requires deep emotional engagement
+        # 6a. Emotional depth gate: CONSEQUENCE -> OWNERSHIP
+        # Softened: "deep" always passes. "moderate" passes after 3+ turns.
+        # "surface" passes after 4+ turns (fallback to prevent infinite loops).
+        # The goal is to get to OWNERSHIP where the sale happens — staying stuck
+        # in CONSEQUENCE forever loses the prospect.
         next_phase = get_next_phase(current_phase)
         if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
-            if deepest_emotional_depth != "deep":
+            depth_sufficient = (
+                deepest_emotional_depth == "deep"
+                or (deepest_emotional_depth == "moderate" and turns_in_current_phase >= 3)
+                or turns_in_current_phase >= 4  # Hard fallback: never trap prospect
+            )
+            if not depth_sufficient:
                 return DecisionOutput(
                     action="STAY",
                     target_phase=current_phase.value,
-                    reason=f"Cannot advance to OWNERSHIP. No deep emotional engagement captured yet (deepest: {deepest_emotional_depth}). Keep consequence work going.",
+                    reason=f"Cannot advance to OWNERSHIP yet. Emotional depth: {deepest_emotional_depth}, turns: {turns_in_current_phase}. Need 'deep', or 'moderate' with 3+ turns, or 4+ turns as fallback.",
                     retry_count=retry_count,
                 )
 
@@ -327,8 +329,6 @@ def make_decision(
                 )
 
     # 7. Probing trigger — force deeper engagement for thin/surface responses
-    #    Only fires when exit criteria are NOT fully met (all_criteria_met was False above).
-    #    PROBE increments retry_count so Break Glass can eventually rescue stuck conversations.
     richness = comprehension.response_richness
     depth = comprehension.emotional_depth
 
@@ -359,9 +359,24 @@ def make_decision(
 
     # 8. Repetition detection: if no new info for 2+ turns, pivot or force-advance
     if consecutive_no_new_info >= 2:
-        # If we have MOST criteria met (>= 50%), force-advance
         if fraction_met >= 0.5:
             next_phase = get_next_phase(current_phase)
+
+            # Softened CONSEQUENCE -> OWNERSHIP gate for repetition-based advancement
+            # If prospect is repeating themselves, they've engaged enough — don't trap them
+            if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
+                depth_sufficient = (
+                    deepest_emotional_depth in ("deep", "moderate")
+                    or turns_in_current_phase >= 3
+                )
+                if not depth_sufficient:
+                    return DecisionOutput(
+                        action="STAY",
+                        target_phase=current_phase.value,
+                        reason=f"Repetition detected but emotional depth too shallow for OWNERSHIP (deepest: {deepest_emotional_depth}, turns: {turns_in_current_phase}). Trying deeper angle.",
+                        retry_count=retry_count + 1,
+                    )
+
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,
@@ -376,24 +391,29 @@ def make_decision(
                 retry_count=retry_count + 1,
             )
 
-        if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
-            depth_sufficient = (
-                deepest_emotional_depth == "deep"
-                or (deepest_emotional_depth == "moderate" and turns_in_current_phase >= 3)
-            )
-            if not depth_sufficient:
-                return DecisionOutput(
-                    action="STAY",
-                    target_phase=current_phase.value,
-                    reason=f"Cannot advance to OWNERSHIP. Emotional depth: {deepest_emotional_depth}, turns: {turns_in_current_phase}. Need 'deep' or 'moderate' with 3+ turns.",
-                    retry_count=retry_count,
-                )
-
     # 9. Break Glass check (retry-based)
     max_retries = get_max_retries(current_phase)
     if retry_count >= max_retries:
         if fraction_met >= 0.5:
             next_phase = get_next_phase(current_phase)
+
+            # Softened gate for break-glass advancement too
+            if current_phase == NepqPhase.CONSEQUENCE and next_phase == NepqPhase.OWNERSHIP:
+                depth_sufficient = (
+                    deepest_emotional_depth in ("deep", "moderate")
+                    or turns_in_current_phase >= 3
+                )
+                if not depth_sufficient:
+                    # Don't block forever — if we hit max retries + 2, force through
+                    if retry_count < max_retries + 2:
+                        return DecisionOutput(
+                            action="BREAK_GLASS",
+                            target_phase=current_phase.value,
+                            reason=f"Break Glass but emotional depth insufficient for OWNERSHIP (deepest: {deepest_emotional_depth}). Trying deeper angle.",
+                            retry_count=retry_count + 1,
+                        )
+                    # else fall through to force-advance below
+
             return DecisionOutput(
                 action="ADVANCE",
                 target_phase=next_phase.value,

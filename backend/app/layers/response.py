@@ -91,7 +91,7 @@ def _get_client() -> Anthropic:
         # load_dotenv removed - database.py handles this
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise RuntimeError(f"ANTHROPIC_API_KEY not found. Checked .env at: {_ENV_PATH}")
+            raise RuntimeError("ANTHROPIC_API_KEY not found. Set it in your .env file or environment variables.")
         _client = Anthropic(api_key=api_key)
     return _client
 
