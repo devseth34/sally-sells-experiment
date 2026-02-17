@@ -67,7 +67,7 @@ CRITERIA_GUIDANCE = {
     # COMMITMENT
     "positive_signal_or_hard_no": "Confirm their decision: are they moving forward or not?",
     "email_collected": "Ask for their email address.",
-    "phone_collected": "Ask for their phone number.",
+    "phone_collected": "Ask for their phone number. If they decline, that's OK — move on to sending the link.",
     "link_sent": "Send them the appropriate link (payment or free workshop).",
 }
 
@@ -250,7 +250,9 @@ If they say yes: "What makes you feel that way?"
 Step 3 — PRESENT THE OFFER:
 "So our CEO Nik Shah does a hands-on Discovery Workshop where he comes to you and builds a customized AI plan with your team. It's $10,000."
 - State price clearly and confidently
-- Then STOP. Wait for response. Don't ask "does that sound good?"
+- Then ask an objection-dissolving closing question: "Would you be opposed to making that investment toward [their specific goal]?"
+- Reference THEIR desired outcome in the closing question
+- Do NOT just state the price and stop
 
 Step 4 — OBJECTION DIFFUSION (if needed):
 "That's not a problem... [objection] aside, do you feel like having that AI plan is the right move for [their desired outcome]?"
@@ -259,6 +261,7 @@ Step 4 — OBJECTION DIFFUSION (if needed):
 - RESOLVE: "If we could figure out the [objection] piece, would you want to move forward?"
 - NEVER throw their pain back at them ("but you said it's costing you...")
 - NEVER argue with an objection
+- If they STILL object after full diffusion, offer the free workshop as a POSITIVE alternative
 
 THE OFFER (DO NOT MENTION BEFORE OWNERSHIP PHASE):
 - 100x's CEO, Nik Shah, comes onsite to build a customized AI transformation plan
@@ -727,6 +730,7 @@ Rules for PROBE responses:
         profile_pain = ", ".join(profile.pain_points) if profile.pain_points else "their challenges"
         profile_frustrations = ", ".join(profile.frustrations) if profile.frustrations else ""
         profile_cost = profile.cost_of_inaction or ""
+        profile_desired = profile.desired_state or "their goal"
 
         if substep <= 1:
             ownership_instructions = """
@@ -763,12 +767,26 @@ Say something like: "Look, you told me [their exact pain]. And [their exact cons
 - This is ONE bridge attempt. After their response, move to presenting the offer.
 """
         elif substep == 4:
-            ownership_instructions = """
-OWNERSHIP PHASE — STEP 4: PRESENT THE OFFER
-NOW present the workshop: "So our CEO Nik Shah does a hands-on Discovery Workshop where he comes onsite and builds a customized AI plan with your team. It's a $10,000 investment."
-- State the price clearly and confidently
-- One sentence describing what they get, one sentence with the price
-- Then STOP. Wait for their response. Do NOT ask "does that sound good?" or push for a yes.
+            ownership_instructions = f"""
+OWNERSHIP PHASE — STEP 4: PRESENT THE OFFER WITH CLOSING QUESTION
+Present the workshop naturally: "So our CEO Nik Shah does a hands-on Discovery Workshop where he comes to [their company] and builds a customized AI plan with your team. It's a $10,000 investment."
+
+Then IMMEDIATELY follow with an objection-dissolving closing question that ties back to THEIR specific goal:
+"Would you be opposed to making that investment toward [their specific desired outcome]?"
+
+Their desired outcome: {profile_desired}
+Their pain: {profile_pain}
+Their cost of inaction: {profile_cost}
+
+Examples of good closing questions:
+- "Would you be opposed to making that investment toward hitting {profile_desired}?"
+- "Based on what you said about {profile_cost}, would you be against investing in fixing that?"
+
+CRITICAL RULES:
+- NEVER just state the price and stop. ALWAYS follow with the closing question.
+- The closing question must use THEIR words and THEIR desired outcome.
+- Use "opposed" or "against" framing (makes it psychologically easier to say yes).
+- Keep the whole response to 3 sentences max: offer + price + closing question.
 """
         elif substep == 5:
             ownership_instructions = """
@@ -806,41 +824,121 @@ OWNERSHIP PHASE — STEP 6: CLOSE OR FALLBACK
         objection_upper = decision.objection_context.upper() if decision.objection_context else ""
 
         if "DIFFUSE:" in objection_upper and current_phase_is_late:
-            # NEPQ diffusion protocol for late-phase objections
+            # v2.2: Type-specific objection handling with consequence/problem/solution recall
             objection_type_str = objection_upper.replace("DIFFUSE:", "").split(":")[0].strip()
             objection_detail = decision.objection_context.split(":", 2)[-1].strip() if ":" in decision.objection_context else ""
 
-            objection_instructions = f"""
-OBJECTION HANDLING — NEPQ DIFFUSION PROTOCOL:
+            # Build profile context for recall
+            profile_pain = ", ".join(profile.pain_points) if profile.pain_points else "their challenges"
+            profile_cost = profile.cost_of_inaction or "the cost of waiting"
+            profile_desired = profile.desired_state or "their goal"
+            profile_frustrations = ", ".join(profile.frustrations) if profile.frustrations else ""
+
+            if "PRICE" in objection_type_str:
+                # PRICE → Consequence Recall: "What is the cost of NOT doing this?"
+                objection_instructions = f"""
+OBJECTION HANDLING — PRICE (Consequence Recall):
+The prospect thinks it's too expensive: "{objection_detail}"
+
+DO NOT argue about the price. Return to the cost of NOT acting.
+Help them re-feel what inaction costs them, using THEIR OWN words from earlier.
+
+Say something like: "Totally fair... but you mentioned {profile_cost}. What does letting that continue for another 6 months actually look like for you?"
+
+Their pain: {profile_pain}
+Their frustrations: {profile_frustrations}
+Cost of inaction: {profile_cost}
+
+RULES:
+- ONE question about the cost of inaction, using THEIR words
+- Do NOT mention the $10,000 number again
+- Do NOT say "but you said..." aggressively. Frame it as genuine concern.
+- Do NOT throw their pain at them like a weapon
+- Use "..." pauses to let the weight land
+- If they STILL object after this, the free workshop will be offered next turn automatically
+"""
+            elif "TIMING" in objection_type_str:
+                # TIMING → Problem Awareness Recall: "What happens if you wait?"
+                objection_instructions = f"""
+OBJECTION HANDLING — TIMING (Problem Awareness Recall):
+The prospect wants to wait: "{objection_detail}"
+
+Return to what happens if they delay. Help them feel why waiting is costly.
+
+Say something like: "Totally fair... but you mentioned {profile_pain}. If you wait another few months, what does that look like?"
+
+Their pain: {profile_pain}
+Their cost of inaction: {profile_cost}
+
+RULES:
+- ONE question about what happens if they wait
+- Do NOT push urgency aggressively
+- Frame it as genuine curiosity, not pressure
+- If they still want to wait, the free workshop will be offered next turn
+"""
+            elif "NEED" in objection_type_str:
+                # NEED → Solution Awareness Recall: "What would success look like?"
+                objection_instructions = f"""
+OBJECTION HANDLING — NEED (Solution Awareness Recall):
+The prospect isn't sure they need this: "{objection_detail}"
+
+Return to their desired state and the gap. Help them re-feel the distance.
+
+Say something like: "That's fair... you mentioned wanting {profile_desired}. How far away from that does it feel right now?"
+
+Their desired outcome: {profile_desired}
+Their current pain: {profile_pain}
+
+RULES:
+- ONE question reconnecting them to their desired state vs current reality
+- Do NOT pitch features or benefits
+- If they still don't see the need, the free workshop will be offered next turn
+"""
+            elif "AUTHORITY" in objection_type_str:
+                # AUTHORITY → Clarify decision process, offer to include stakeholders
+                objection_instructions = f"""
+OBJECTION HANDLING — AUTHORITY:
+The prospect needs someone else's buy-in: "{objection_detail}"
+
+Acknowledge and clarify the decision process. Offer to include the other person.
+
+Say something like: "Makes total sense. Who else would need to weigh in on this? Happy to loop them in."
+
+RULES:
+- ONE question about the decision process
+- Do NOT push past this — respect their org structure
+- Offer to include stakeholders naturally
+"""
+            else:
+                # Generic diffusion for unknown objection types
+                objection_instructions = f"""
+OBJECTION HANDLING — NEPQ DIFFUSION:
 The prospect raised a {objection_type_str} objection: "{objection_detail}"
 
-Follow this EXACT sequence. Do ONE step per message. Do NOT stack steps.
+Step 1: DIFFUSE — "That's not a problem..." (lower temperature)
+Step 2: ISOLATE — "[Objection] aside, do you feel like this is the right move for {profile_desired}?"
+Step 3: RESOLVE — "If we could figure out the [objection], would you want to move forward?"
 
-Step 1 — DIFFUSE (lower the emotional temperature):
-Say: "That's not a problem..." or a natural variant like "Totally fair..." or "Makes sense..."
-- Calm, concerned tone
-- This one phrase signals you're not going to fight them
-- NEVER counter with "but you said..." or use their own pain against them
-- NEVER say "I get it, but..." — the "but" negates the diffusion
+Do ONE step per message.
+NEVER argue. NEVER throw their pain back at them.
+"""
+        elif "GRACEFUL_ALT" in objection_upper or "graceful_alternative" in (decision.objection_context or "").lower():
+            # Post-diffusion fallback: offer free workshop
+            tidycal_path = os.getenv("TIDYCAL_PATH", "")
+            tidycal_url = f"https://tidycal.com/{tidycal_path}" if tidycal_path else ""
+            objection_instructions = f"""
+GRACEFUL ALTERNATIVE — OFFER FREE WORKSHOP:
+The prospect has objected multiple times. Diffusion is complete. Now offer the free workshop as a POSITIVE alternative, not a consolation prize.
 
-Step 2 — ISOLATE (separate objection from desire):
-Ask: "[Objection] aside... do you feel like having a customized AI plan is the right move for getting [their desired outcome]?"
-- Use their exact desired outcome language from earlier
-- If they say yes → the objection becomes logistics, not a deal-breaker
-- If they say no → probe why
+Say something like: "Totally fair. We also have a free online AI Discovery Workshop that covers the core strategy. It might be a good way to see the value first before making a bigger commitment. Want me to send you the link?"
 
-Step 3 — RESOLVE (let them solve it):
-If they confirmed yes, ask: "OK so if we could figure out the [objection] piece, would you want to move forward?"
-- For PRICE: "If we could find a way to make the investment work, would you want to do it?"
-- For TIMING: "If the timing could be flexible, would you want to get started?"
-- For AUTHORITY: "If your [decision maker] was on board, is this something you'd want to do?"
+{f'If they say yes, include this link: {tidycal_url}' if tidycal_url else 'If they say yes, let them know you will send the link.'}
 
-CRITICAL:
-- NEVER say "but you told me it's costing you money" or throw their pain back at them
-- NEVER argue with an objection
-- NEVER immediately offer the free workshop as a consolation prize
-- Only offer free alternative AFTER full diffusion, if they still can't move forward
-- Frame the free option positively: "We also have a free online version that covers the core strategy. That might be a better starting point."
+CRITICAL RULES:
+- Frame it POSITIVELY: "a good way to start" not "since you can't afford it"
+- Do NOT re-send the paid Stripe link
+- Do NOT guilt them or reference their pain/cost again
+- If they decline the free workshop too, end gracefully: "No worries at all. You have my info if anything changes. Good luck with [their specific challenge]."
 """
         elif "PRICE" in objection_upper:
             objection_instructions = f"""
@@ -904,6 +1002,24 @@ Instead, bridge from what they just said into your next question.
         needs_email = not profile_dict_check.get("email")
         needs_phone = not profile_dict_check.get("phone")
 
+        # Detect if payment link was already sent in this conversation
+        payment_link_already_sent = any(
+            "checkout.stripe.com" in m.get("content", "").lower()
+            for m in conversation_history
+            if m.get("role") == "assistant"
+        )
+
+        # Detect if this is a post-objection scenario (prospect already got the link and objected)
+        recent_objection_after_link = False
+        if payment_link_already_sent:
+            # Check if any recent user message contains price objection language
+            for m in conversation_history[-6:]:
+                if m.get("role") == "user":
+                    msg_lower = m.get("content", "").lower()
+                    if any(w in msg_lower for w in ["expensive", "too much", "can't afford", "changed my mind", "not worth", "budget"]):
+                        recent_objection_after_link = True
+                        break
+
         if needs_email:
             contact_instructions = """
 CONTACT COLLECTION: The prospect has agreed. Now collect their email FIRST.
@@ -912,16 +1028,88 @@ Do NOT ask for phone yet. Just email this turn.
 Do NOT include any URLs or links yet.
 """
         elif needs_phone:
-            contact_instructions = """
+            # Detect if prospect already declined giving phone number
+            phone_declined = any(
+                any(w in m.get("content", "").lower() for w in ["dont want", "don't want", "no phone", "not giving", "prefer not", "rather not"])
+                and any(w in m.get("content", "").lower() for w in ["phone", "number", "call"])
+                for m in conversation_history[-4:]
+                if m.get("role") == "user"
+            )
+
+            if phone_declined:
+                # Phone was declined — skip to link delivery
+                # Detect if they want paid or free
+                recent_msgs = [m.get("content", "").lower() for m in conversation_history[-8:]]
+                wants_to_pay = any(
+                    any(w in msg for w in ["want to pay", "go ahead", "i'll pay", "ill pay", "sign me up", "let's do it", "lets do it", "im in", "i'm in"])
+                    for msg in recent_msgs
+                )
+                sally_offered_free = any(
+                    "free" in m.get("content", "").lower() and "workshop" in m.get("content", "").lower()
+                    for m in conversation_history[-8:]
+                    if m.get("role") == "assistant"
+                )
+                chose_free = sally_offered_free and any(
+                    any(w in msg for w in ["yes", "sure", "ok", "sounds good", "send it", "send me", "yeah", "yep"])
+                    for msg in recent_msgs
+                )
+
+                if wants_to_pay:
+                    contact_instructions = f"""
+CLOSING: Phone was declined, that's fine. They want the PAID workshop ($10,000).
+You MUST include [PAYMENT_LINK] in your response. Acknowledge skipping phone gracefully.
+
+Your response should be something like:
+"No problem on the phone. Here's the link to secure your spot: [PAYMENT_LINK]
+
+Looking forward to getting this started!"
+
+CRITICAL: You MUST include [PAYMENT_LINK] in your response.
+"""
+                elif chose_free and tidycal_path:
+                    contact_instructions = f"""
+CLOSING: Phone was declined, that's fine. They chose the FREE workshop.
+You MUST include this link: https://tidycal.com/{tidycal_path}
+
+Your response should be something like:
+"No problem on the phone. Here's the link to book your free workshop: https://tidycal.com/{tidycal_path}
+
+Looking forward to having you join!"
+"""
+                else:
+                    contact_instructions = f"""
+CLOSING: Phone was declined, that's fine. Send them the PAID workshop link.
+You MUST include [PAYMENT_LINK] in your response.
+
+"No problem at all. Here's the link to secure your spot: [PAYMENT_LINK]"
+"""
+            else:
+                contact_instructions = """
 CONTACT COLLECTION: You have their email. Now get their phone number.
 Ask naturally: "And what's the best number to reach you at?"
 Do NOT include any URLs or links yet.
 """
         else:
-            # Determine if they chose the free workshop based on conversation context
+            # Determine if they chose free vs paid based on conversation context
             recent_msgs = [m.get("content", "").lower() for m in conversation_history[-8:]]
-            chose_free = any(
-                ("free" in msg and ("workshop" in msg or "link" in msg or "sign up" in msg or "sound" in msg))
+
+            # Check if prospect explicitly wants to pay (overrides free choice)
+            wants_to_pay = any(
+                any(w in msg for w in ["want to pay", "go ahead", "i'll pay", "ill pay", "sign me up", "let's do it", "lets do it", "im in", "i'm in"])
+                for msg in recent_msgs
+                if msg  # skip empty
+            )
+
+            # Only count as "chose free" if BOTH:
+            # 1. Sally explicitly offered the free workshop in a recent message
+            # 2. Prospect said yes/sure/ok AFTER that offer
+            sally_offered_free = any(
+                "free" in m.get("content", "").lower() and "workshop" in m.get("content", "").lower()
+                for m in conversation_history[-8:]
+                if m.get("role") == "assistant"
+            )
+            chose_free = not wants_to_pay and sally_offered_free and any(
+                any(w in msg for w in ["yes", "sure", "ok", "sounds good", "send it", "send me", "yeah", "yep"])
                 for msg in recent_msgs
             )
 
@@ -936,6 +1124,24 @@ Your response MUST look something like:
 Looking forward to having you join! [warm closing referencing their name]"
 
 This is CRITICAL. The link MUST appear in your response text.
+"""
+            elif recent_objection_after_link:
+                # They already got the payment link and objected — do NOT re-send it
+                tidycal_url = f"https://tidycal.com/{tidycal_path}" if tidycal_path else ""
+                contact_instructions = f"""
+CLOSING — POST-OBJECTION: The prospect already received the payment link and then objected to the price.
+Do NOT send the payment link again. Instead:
+
+Option A: If they agreed after NEPQ diffusion, reference the existing link:
+"The link I sent earlier is still active whenever you're ready."
+
+Option B: If they're still hesitant, offer the free workshop:
+"We also have a free online AI Discovery Workshop that's a great way to see the value first.{f' Here is the link: https://tidycal.com/{tidycal_path}' if tidycal_url else ''}"
+
+Option C: If they declined everything, end gracefully:
+"No problem at all. You have my info if anything changes. Good luck with [their specific challenge]!"
+
+CRITICAL: Do NOT re-send the Stripe payment link. They already have it.
 """
             else:
                 contact_instructions = f"""

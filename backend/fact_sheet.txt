@@ -30,7 +30,7 @@ WHAT THE WORKSHOP IS NOT:
 
 PROCESS:
 1. Prospect has a qualifying conversation (this chat)
-2. Prospect books the workshop via Calendly
+2. Prospect books the FREE workshop via Tidycal
 3. Prospect pays $10,000 via Stripe
 4. 100x team does pre-workshop research on the company
 5. Nik Shah arrives onsite for the full-day workshop

@@ -175,8 +175,10 @@ class SallyEngine:
         if comprehension.objection_type != ObjectionType.NONE and current_phase in {NepqPhase.OWNERSHIP, NepqPhase.COMMITMENT}:
             if objection_diffusion_step == 0:
                 objection_diffusion_step = 1  # Start diffusion
-            elif comprehension.objection_diffusion_status == "repeated":
-                objection_diffusion_step = 1  # Restart
+            else:
+                # Each subsequent objection increments the step
+                # This drives graceful_alternative trigger (fires at step >= 2)
+                objection_diffusion_step += 1
         elif comprehension.objection_diffusion_status == "diffused":
             objection_diffusion_step = max(objection_diffusion_step, 1)
         elif comprehension.objection_diffusion_status == "isolated":
@@ -187,10 +189,37 @@ class SallyEngine:
         if comprehension.user_intent == UserIntent.AGREEMENT and objection_diffusion_step > 0:
             objection_diffusion_step = 0
 
-        # Track ownership substep progression
+        # === CRITERIA LATCH (must run BEFORE substep tracking) ===
+        # Once an exit criterion is MET in this phase, it stays MET.
+        # Prevents Layer 1 from flip-flopping on criteria across turns.
+        exit_eval = comprehension.exit_evaluation
+        if current_phase == NepqPhase.OWNERSHIP:
+            if ownership_substep >= 2:
+                cq = exit_eval.criteria.get("commitment_question_asked")
+                if cq and not cq.met:
+                    cq.met = True
+                    cq.evidence = "Latched: commitment question was asked in a prior turn"
+            if ownership_substep >= 4:
+                sp = exit_eval.criteria.get("prospect_self_persuaded")
+                if sp and not sp.met:
+                    sp.met = True
+                    sp.evidence = "Latched: prospect self-persuaded in a prior turn"
+            if ownership_substep >= 5:
+                ps = exit_eval.criteria.get("price_stated")
+                if ps and not ps.met:
+                    ps.met = True
+                    ps.evidence = "Latched: price was stated in a prior turn"
+
+        if current_phase == NepqPhase.COMMITMENT:
+            if profile.email:
+                ec = exit_eval.criteria.get("email_collected")
+                if ec and not ec.met:
+                    ec.met = True
+                    ec.evidence = f"Latched: email already in profile ({profile.email})"
+
+        # === OWNERSHIP SUBSTEP TRACKING (runs AFTER latch) ===
         if current_phase == NepqPhase.OWNERSHIP:
             original_substep = ownership_substep
-            exit_eval = comprehension.exit_evaluation
 
             commitment_asked = exit_eval.criteria.get("commitment_question_asked")
             self_persuaded = exit_eval.criteria.get("prospect_self_persuaded")
@@ -216,7 +245,6 @@ class SallyEngine:
                 ownership_substep = 4
 
             # 3 → 4: bridge auto-advance (bridge is ONE attempt, advance next turn)
-            # Only if we ENTERED this turn as substep 3 (not if we just set it)
             if original_substep == 3:
                 ownership_substep = 4
 
@@ -250,6 +278,42 @@ class SallyEngine:
                      f"diffusion_step={objection_diffusion_step}, "
                      f"ownership_substep={ownership_substep}")
 
+        # Layer 2: Decision
+        logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
+        
+        # Criteria latch: once an exit criterion is MET in this phase, it stays MET
+        # This prevents Layer 1 from flip-flopping on criteria across turns
+        # (e.g., prospect_self_persuaded going from MET back to NOT MET)
+        if hasattr(comprehension, '_latched_criteria'):
+            pass  # Already latched (shouldn't happen, but safety check)
+        # We need to carry forward previously-met criteria from prior turns
+        # === CRITERIA LATCH (must run BEFORE substep tracking) ===
+        # Once an exit criterion is MET in this phase, it stays MET.
+        # Prevents Layer 1 from flip-flopping on criteria across turns.
+        exit_eval = comprehension.exit_evaluation
+        if current_phase == NepqPhase.OWNERSHIP:
+            if ownership_substep >= 2:
+                cq = exit_eval.criteria.get("commitment_question_asked")
+                if cq and not cq.met:
+                    cq.met = True
+                    cq.evidence = "Latched: commitment question was asked in a prior turn"
+            if ownership_substep >= 4:
+                sp = exit_eval.criteria.get("prospect_self_persuaded")
+                if sp and not sp.met:
+                    sp.met = True
+                    sp.evidence = "Latched: prospect self-persuaded in a prior turn"
+            if ownership_substep >= 5:
+                ps = exit_eval.criteria.get("price_stated")
+                if ps and not ps.met:
+                    ps.met = True
+                    ps.evidence = "Latched: price was stated in a prior turn"
+
+        if current_phase == NepqPhase.COMMITMENT:
+            if profile.email:
+                ec = exit_eval.criteria.get("email_collected")
+                if ec and not ec.met:
+                    ec.met = True
+                    ec.evidence = f"Latched: email already in profile ({profile.email})"
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
         l2_start = time.monotonic()

@@ -156,7 +156,19 @@ def make_decision(
                 retry_count=retry_count,
             )
 
-        # In late phases, handle via NEPQ diffusion (never reroute backward)
+        # COMMITMENT phase: type-specific objection handling with consequence/problem/solution recall
+        # First attempt → NEPQ consequence recall IN-PHASE (not graceful_alternative yet)
+        # graceful_alternative only triggers via detect_situation after diffusion_step >= 2
+        if current_phase == NepqPhase.COMMITMENT:
+            return DecisionOutput(
+                action="STAY",
+                target_phase=current_phase.value,
+                reason=f"{objection.value} objection in COMMITMENT. NEPQ objection handling (diffusion_step={objection_diffusion_step}).",
+                objection_context=f"DIFFUSE:{objection.value}: {comprehension.objection_detail}",
+                retry_count=retry_count,
+            )
+
+        # In late phases (OWNERSHIP), handle via NEPQ diffusion (never reroute backward)
         if current_phase in LATE_PHASES:
             return DecisionOutput(
                 action="STAY",
@@ -273,12 +285,15 @@ def make_decision(
                 missing_contact.append("phone")
 
             if missing_contact and has_positive_signal:
-                return DecisionOutput(
-                    action="STAY",
-                    target_phase=current_phase.value,
-                    reason=f"Prospect committed but still need: {', '.join(missing_contact)}. Collecting contact info before closing.",
-                    retry_count=retry_count,
-                )
+                # Phone is optional — only block ending if email is missing
+                if "email" in missing_contact:
+                    return DecisionOutput(
+                        action="STAY",
+                        target_phase=current_phase.value,
+                        reason=f"Prospect committed but still need: {', '.join(missing_contact)}. Collecting contact info before closing.",
+                        retry_count=retry_count,
+                    )
+                # Phone missing but email collected — allow ending
 
             return DecisionOutput(
                 action="END",
@@ -306,8 +321,45 @@ def make_decision(
 
     # 6b. OWNERSHIP substep enforcement — prevent looping within OWNERSHIP sub-states
     if current_phase == NepqPhase.OWNERSHIP:
-        # Hard ceiling: after 8 turns in OWNERSHIP, force free workshop offer
+        # Force advance to COMMITMENT when prospect agrees after price presentation
+        if ownership_substep >= 4:
+            price_met = exit_eval.criteria.get("price_stated")
+            if price_met and price_met.met:
+                if comprehension.user_intent == UserIntent.AGREEMENT:
+                    next_phase = get_next_phase(current_phase)
+                    return DecisionOutput(
+                        action="ADVANCE",
+                        target_phase=next_phase.value,
+                        reason="Prospect agreed after price stated. Advancing to COMMITMENT.",
+                        retry_count=0,
+                    )
+
+        # Force price presentation if stuck at substep 4 for too long
+        if ownership_substep == 4 and turns_in_current_phase >= 3:
+            ps = exit_eval.criteria.get("price_stated")
+            if ps and not ps.met:
+                return DecisionOutput(
+                    action="PROBE",
+                    target_phase=current_phase.value,
+                    reason=f"Ownership substep 4 (PRESENT OFFER) but price not stated after {turns_in_current_phase} turns. Forcing price presentation.",
+                    probe_target="price_stated",
+                    retry_count=retry_count,
+                )
+
+        # Hard ceiling: after 8 turns in OWNERSHIP
         if turns_in_current_phase >= 8:
+            # If prospect has already agreed (to paid or free), force advance to COMMITMENT
+            if comprehension.user_intent in (UserIntent.AGREEMENT, UserIntent.DIRECT_ANSWER):
+                definitive = exit_eval.criteria.get("definitive_response")
+                if definitive and definitive.met:
+                    next_phase = get_next_phase(current_phase)
+                    return DecisionOutput(
+                        action="ADVANCE",
+                        target_phase=next_phase.value,
+                        reason=f"OWNERSHIP hard ceiling + prospect agreed. Forcing advance to {next_phase.value}.",
+                        retry_count=0,
+                    )
+            # Otherwise offer free workshop
             return DecisionOutput(
                 action="STAY",
                 target_phase=current_phase.value,
@@ -327,6 +379,27 @@ def make_decision(
                     objection_context="PLAYBOOK:bridge_with_their_words",
                     retry_count=retry_count,
                 )
+
+    # 6c. COMMITMENT: phone decline bypass — if phone refused, skip to link delivery
+    if current_phase == NepqPhase.COMMITMENT and not all_criteria_met:
+        phone_crit = exit_eval.criteria.get("phone_collected")
+        email_crit = exit_eval.criteria.get("email_collected")
+        positive_crit = exit_eval.criteria.get("positive_signal_or_hard_no")
+        link_crit = exit_eval.criteria.get("link_sent")
+
+        # If we have email + positive signal but phone refused/not provided, skip phone → send link
+        if (email_crit and email_crit.met
+                and positive_crit and positive_crit.met
+                and phone_crit and not phone_crit.met
+                and (not link_crit or not link_crit.met)
+                and consecutive_no_new_info >= 1):
+            return DecisionOutput(
+                action="PROBE",
+                target_phase=current_phase.value,
+                reason=f"Phone declined or not provided. Skipping to link delivery. ({criteria_met}/{criteria_total} met: {criteria_status_str})",
+                retry_count=retry_count,
+                probe_target="link_sent",
+            )
 
     # 7. Probing trigger — force deeper engagement for thin/surface responses
     richness = comprehension.response_richness
@@ -479,6 +552,14 @@ def detect_situation(
             and comprehension.emotional_intensity == "high"
             and current_phase in LATE_PHASES):
         return "graceful_exit"
+
+    # 1.5: Price objection in COMMITMENT after objection handling already attempted
+    # diffusion_step >= 2 means we already did consequence recall on first objection
+    # and the prospect STILL objects → now offer the free workshop
+    if (current_phase == NepqPhase.COMMITMENT
+            and comprehension.objection_type == ObjectionType.PRICE
+            and objection_diffusion_step >= 2):
+        return "graceful_alternative"
 
     # 2. Prospect already sold themselves (spontaneous buy signal)
     if current_phase in {NepqPhase.CONSEQUENCE, NepqPhase.OWNERSHIP}:

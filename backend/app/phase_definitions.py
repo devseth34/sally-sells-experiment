@@ -184,7 +184,7 @@ PHASE_DEFINITIONS = {
 
     NepqPhase.OWNERSHIP: {
         "purpose": "Present the $10,000 Discovery Workshop. Handle objections with NEPQ techniques. If they still say no, offer the free workshop. Only advance when they say yes.",
-        "response_length": {"max_sentences": 4, "max_tokens": 200},
+        "response_length": {"max_sentences": 5, "max_tokens": 250},
         "exit_criteria": [
             "The $10,000 price has been clearly stated to the prospect",
             "Prospect has given a definitive response: yes to paid, yes to free, or hard no",
@@ -233,7 +233,7 @@ PHASE_DEFINITIONS = {
         "exit_criteria_checklist": {
             "positive_signal_or_hard_no": "Prospect has given a positive signal (yes, sure, sounds good) OR a definitive hard no",
             "email_collected": "An email address has been collected from the prospect",
-            "phone_collected": "A phone number has been collected from the prospect",
+            "phone_collected": "A phone number has been collected from the prospect, OR the prospect explicitly declined to share their phone number",
             "link_sent": "A payment or booking link has been sent to the prospect",
         },
         "advance_when": "all_or_hard_no",  # special: hard no can also terminate
@@ -242,7 +242,9 @@ PHASE_DEFINITIONS = {
         "sally_objectives": [
             "If YES to paid: collect email, then phone, then send [PAYMENT_LINK]",
             "If YES to free: collect email, then phone, then send the TidyCal booking link",
-            "Once you have email + phone: send the link and close warmly",
+            "Once you have email + phone (or phone declined): send the link and close warmly",
+            "If prospect declines phone: that's OK. Skip to sending the link immediately.",
+            "If prospect says 'I want to pay' after seeing the free option: send [PAYMENT_LINK], not TidyCal",
             "If hard no: thank them, leave the door open, end gracefully",
         ],
         "extraction_targets": ["email", "phone"],

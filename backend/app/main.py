@@ -392,6 +392,39 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             logger.error(f"[Session {session_id}] Failed to create checkout for inline link: {e}")
             response_text = response_text.replace("[PAYMENT_LINK]", os.getenv("STRIPE_PAYMENT_LINK", ""))
 
+    # --- Link Guarantee: ensure correct links appear in closing responses ---
+    import re
+    tidycal_path = os.getenv("TIDYCAL_PATH", "")
+    tidycal_url = f"https://tidycal.com/{tidycal_path}" if tidycal_path else ""
+    stripe_fallback = os.getenv("STRIPE_PAYMENT_LINK", "")
+    text_lower = response_text.lower()
+
+    # Step 1: Remove ALL hallucinated Calendly URLs (we don't use Calendly)
+    if "calendly.com" in text_lower:
+        response_text = re.sub(r'https?://calendly\.com/\S+', '', response_text)
+        response_text = re.sub(r'\s+', ' ', response_text).strip()
+        logger.warning(f"[Session {session_id}] Stripped hallucinated Calendly URL")
+        text_lower = response_text.lower()
+
+    # Step 2: Determine if this is a link-delivery turn
+    is_closing_phase = new_phase in (NepqPhase.COMMITMENT, NepqPhase.TERMINATED, NepqPhase.OWNERSHIP)
+    has_any_link = "http://" in text_lower or "https://" in text_lower or "[PAYMENT_LINK]" in response_text
+    mentions_sending_link = any(w in text_lower for w in ["send you", "here's the link", "booking link", "workshop link", "secure your spot", "link to"])
+    is_free_context = any(w in text_lower for w in ["free workshop", "free online", "free version", "free ai", "no cost"])
+
+    # Step 3: If Sally promises a link but didn't include one, inject it
+    if is_closing_phase and mentions_sending_link and not has_any_link:
+        if is_free_context and tidycal_url:
+            response_text = response_text.rstrip() + f"\n\n{tidycal_url}"
+            logger.info(f"[Session {session_id}] Injected TidyCal link (LLM forgot to include it)")
+        elif stripe_fallback:
+            response_text = response_text.rstrip() + f"\n\n{stripe_fallback}"
+            logger.info(f"[Session {session_id}] Injected Stripe link (LLM forgot to include it)")
+
+    # Step 4: Ensure TidyCal URL is correct (LLM might write wrong tidycal path)
+    if "tidycal.com" in text_lower and tidycal_url:
+        response_text = re.sub(r'https?://tidycal\.com/\S+', tidycal_url, response_text)
+
     # Save assistant message
     assistant_msg_id = str(uuid.uuid4())
     assistant_msg = DBMessage(
