@@ -22,9 +22,16 @@ class SessionStatus(str, Enum):
     ABANDONED = "abandoned"
 
 
+class BotArm(str, Enum):
+    SALLY_NEPQ = "sally_nepq"
+    HANK_HYPES = "hank_hypes"
+    IVY_INFORMS = "ivy_informs"
+
+
 # API Request Models
 class CreateSessionRequest(BaseModel):
     pre_conviction: int = Field(..., ge=1, le=10, description="Pre-chat conviction score 1-10")
+    selected_bot: BotArm = Field(default=BotArm.SALLY_NEPQ, description="Which bot to talk to")
 
 
 class SendMessageRequest(BaseModel):
@@ -47,6 +54,8 @@ class CreateSessionResponse(BaseModel):
     session_id: str
     current_phase: str
     pre_conviction: int
+    assigned_arm: str
+    bot_display_name: str
     greeting: MessageResponse
 
 
@@ -67,6 +76,7 @@ class SessionDetailResponse(BaseModel):
     post_conviction: Optional[int]
     start_time: float
     end_time: Optional[float]
+    assigned_arm: Optional[str] = None
     messages: List[MessageResponse]
     
     class Config:
@@ -83,6 +93,7 @@ class SessionListItem(BaseModel):
     message_count: int
     start_time: float
     end_time: Optional[float]
+    assigned_arm: Optional[str] = None
 
 
 class PostConvictionRequest(BaseModel):

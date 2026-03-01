@@ -1,4 +1,7 @@
 const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000") + "/api";
+
+export type BotArm = "sally_nepq" | "hank_hypes" | "ivy_informs";
+
 export interface MessageResponse {
   id: string;
   role: "user" | "assistant";
@@ -11,6 +14,8 @@ export interface CreateSessionResponse {
   session_id: string;
   current_phase: string;
   pre_conviction: number;
+  assigned_arm: string;
+  bot_display_name: string;
   greeting: MessageResponse;
 }
 
@@ -44,6 +49,7 @@ export interface SessionListItem {
   message_count: number;
   start_time: number;
   end_time: number | null;
+  assigned_arm?: string;
 }
 
 export interface MetricsResponse {
@@ -58,11 +64,11 @@ export interface MetricsResponse {
   failure_modes: Array<{ phase: string; count: number }>;
 }
 
-export async function createSession(preConviction: number): Promise<CreateSessionResponse> {
+export async function createSession(preConviction: number, selectedBot: BotArm = "sally_nepq"): Promise<CreateSessionResponse> {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pre_conviction: preConviction }),
+    body: JSON.stringify({ pre_conviction: preConviction, selected_bot: selectedBot }),
   });
   if (!res.ok) throw new Error(`Failed to create session: ${res.statusText}`);
   return res.json();

@@ -8,7 +8,7 @@ import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
 import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
 import { formatTime } from "../lib/utils";
-import type { MessageResponse, PostConvictionResponse } from "../lib/api";
+import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
 export function ChatPage() {
   const navigate = useNavigate();
@@ -21,6 +21,10 @@ export function ChatPage() {
   const [preConviction, setPreConviction] = useState<number | null>(null);
   const [showPostModal, setShowPostModal] = useState(false);
   const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
+
+  // Phase 1B: Multi-bot state
+  const [botDisplayName, setBotDisplayName] = useState<string>("Sally");
+  const [assignedArm, setAssignedArm] = useState<string>("sally_nepq");
 
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -60,13 +64,15 @@ export function ChatPage() {
     };
   }, [sessionId, sessionEnded]);
 
-  const handleStartSession = async (score: number) => {
+  const handleStartSession = async (score: number, bot: BotArm) => {
     try {
       setIsLoading(true);
-      const res = await createSession(score);
+      const res = await createSession(score, bot);
       setSessionId(res.session_id);
       setCurrentPhase(res.current_phase);
       setPreConviction(res.pre_conviction);
+      setBotDisplayName(res.bot_display_name);
+      setAssignedArm(res.assigned_arm);
       setMessages([res.greeting]);
       setShowModal(false);
       setSeconds(0);
@@ -128,6 +134,8 @@ export function ChatPage() {
     setPreConviction(null);
     setShowPostModal(false);
     setCdsResult(null);
+    setBotDisplayName("Sally");
+    setAssignedArm("sally_nepq");
     setSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     setShowModal(true);
@@ -170,7 +178,13 @@ export function ChatPage() {
       {sessionId && (
         <>
           <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/80 overflow-x-auto">
-            <PhaseIndicator currentPhase={currentPhase} />
+            {assignedArm === "sally_nepq" ? (
+              <PhaseIndicator currentPhase={currentPhase} />
+            ) : (
+              <span className="text-xs text-zinc-400 font-medium">
+                Talking to: {botDisplayName}
+              </span>
+            )}
             <div className="flex items-center gap-3 shrink-0 ml-4">
               {preConviction && (
                 <span className="text-[10px] text-zinc-500">
@@ -201,7 +215,7 @@ export function ChatPage() {
             {isLoading && (
               <div className="flex justify-start mb-3">
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-500">
-                  Sally is typing...
+                  {botDisplayName} is typing...
                 </div>
               </div>
             )}

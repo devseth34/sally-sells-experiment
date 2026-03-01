@@ -7,7 +7,8 @@ import os
 import time
 
 # Single dotenv load for the entire app — other modules should NOT call load_dotenv()
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"))
+# override=True ensures .env values take precedence over empty/stale system env vars
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"), override=True)
 
 logger = logging.getLogger("sally.startup")
 
@@ -67,6 +68,9 @@ class DBSession(Base):
     thought_logs = Column(Text, default="[]")
     escalation_sent = Column(String, nullable=True)
 
+    # Phase 1B: Multi-bot experiment
+    assigned_arm = Column(String, nullable=True)  # 'sally_nepq', 'hank_hypes', 'ivy_informs'
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -112,6 +116,7 @@ def init_db():
             "deepest_emotional_depth": "ALTER TABLE sessions ADD COLUMN deepest_emotional_depth VARCHAR DEFAULT 'surface'",
             "objection_diffusion_step": "ALTER TABLE sessions ADD COLUMN objection_diffusion_step INTEGER DEFAULT 0",
             "ownership_substep": "ALTER TABLE sessions ADD COLUMN ownership_substep INTEGER DEFAULT 0",
+            "assigned_arm": "ALTER TABLE sessions ADD COLUMN assigned_arm VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():

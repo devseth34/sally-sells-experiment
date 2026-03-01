@@ -26,6 +26,7 @@ import stripe
 from .database import get_db, DBSession, DBMessage, init_db
 from .schemas import (
     NepqPhase,
+    BotArm,
     CreateSessionRequest,
     CreateSessionResponse,
     SendMessageRequest,
@@ -38,6 +39,7 @@ from .schemas import (
     PostConvictionResponse,
 )
 from .agent import SallyEngine
+from .bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
 from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
 import threading
@@ -122,11 +124,15 @@ def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(ge
     session_id = str(uuid.uuid4())[:8].upper()
     now = time.time()
 
+    arm = request.selected_bot
+    initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+
     db_session = DBSession(
         id=session_id,
         status="active",
-        current_phase=NepqPhase.CONNECTION.value,
+        current_phase=initial_phase,
         pre_conviction=request.pre_conviction,
+        assigned_arm=arm.value,
         start_time=now,
         message_count=1,
         retry_count=0,
@@ -136,7 +142,7 @@ def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(ge
     )
     db.add(db_session)
 
-    greeting_text = SallyEngine.get_greeting()
+    greeting_text = bot_get_greeting(arm)
     greeting_id = str(uuid.uuid4())
     greeting_msg = DBMessage(
         id=greeting_id,
@@ -144,21 +150,23 @@ def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(ge
         role="assistant",
         content=greeting_text,
         timestamp=now,
-        phase=NepqPhase.CONNECTION.value,
+        phase=initial_phase,
     )
     db.add(greeting_msg)
     db.commit()
 
     return CreateSessionResponse(
         session_id=session_id,
-        current_phase=NepqPhase.CONNECTION.value,
+        current_phase=initial_phase,
         pre_conviction=request.pre_conviction,
+        assigned_arm=arm.value,
+        bot_display_name=BOT_DISPLAY_NAMES[arm],
         greeting=MessageResponse(
             id=greeting_id,
             role="assistant",
             content=greeting_text,
             timestamp=now,
-            phase=NepqPhase.CONNECTION.value,
+            phase=initial_phase,
         ),
     )
 
@@ -174,7 +182,12 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         raise HTTPException(status_code=400, detail="Session is no longer active")
 
     now = time.time()
-    current_phase = NepqPhase(db_session.current_phase)
+    arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
+    is_sally = arm == BotArm.SALLY_NEPQ
+
+    # For Sally sessions, parse current phase as NepqPhase; for control bots, keep as string
+    current_phase_str = db_session.current_phase
+    current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
     previous_phase = current_phase
 
     # Save user message
@@ -185,7 +198,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         role="user",
         content=request.content,
         timestamp=now,
-        phase=current_phase.value,
+        phase=current_phase.value if current_phase else current_phase_str,
     )
     db.add(user_msg)
     db_session.message_count += 1
@@ -204,14 +217,16 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     ]
     conversation_history.append({"role": "user", "content": request.content})
 
-    # Run the Three-Layer Engine
-    logger.info(f"[Session {session_id}] Processing turn {db_session.turn_number} in {current_phase.value}")
+    # Run the engine (Sally's three-layer pipeline or control bot single-prompt)
+    logger.info(f"[Session {session_id}] Processing turn {db_session.turn_number} in {current_phase_str} (arm={arm.value})")
 
     try:
-        result = SallyEngine.process_turn(
-            current_phase=current_phase,
+        result = route_message(
+            arm=arm,
             user_message=request.content,
             conversation_history=conversation_history,
+            # Sally-specific params (ignored for Hank/Ivy):
+            current_phase=current_phase or NepqPhase.CONNECTION,
             profile_json=db_session.prospect_profile or "{}",
             retry_count=db_session.retry_count,
             turn_number=db_session.turn_number,
@@ -226,7 +241,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         logger.error(f"[Session {session_id}] Engine error: {e}")
         result = {
             "response_text": "How has that been playing out for you day-to-day?",
-            "new_phase": current_phase.value,
+            "new_phase": current_phase.value if current_phase else current_phase_str,
             "new_profile_json": db_session.prospect_profile or "{}",
             "thought_log_json": json.dumps({"error": str(e)}),
             "phase_changed": False,
@@ -240,33 +255,39 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         }
 
     # Update session state
-    new_phase = NepqPhase(result["new_phase"])
-    db_session.current_phase = new_phase.value
-    db_session.retry_count = result["retry_count"]
-    db_session.prospect_profile = result["new_profile_json"]
-    # Track all state counters
-    if hasattr(db_session, 'consecutive_no_new_info'):
-        db_session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
-    if hasattr(db_session, 'turns_in_current_phase'):
-        db_session.turns_in_current_phase = result.get("turns_in_current_phase", 0)
-    if hasattr(db_session, 'deepest_emotional_depth'):
-        db_session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
-    if hasattr(db_session, 'objection_diffusion_step'):
-        db_session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
-    if hasattr(db_session, 'ownership_substep'):
-        db_session.ownership_substep = result.get("ownership_substep", 0)
+    new_phase_str = result["new_phase"]
+    new_phase = NepqPhase(new_phase_str) if new_phase_str in [p.value for p in NepqPhase] else None
+    db_session.current_phase = new_phase_str
 
-    # Append thought log
-    try:
-        existing_logs = json.loads(db_session.thought_logs or "[]")
-    except json.JSONDecodeError:
-        existing_logs = []
-    try:
-        new_log = json.loads(result["thought_log_json"])
-        existing_logs.append(new_log)
-    except json.JSONDecodeError:
-        existing_logs.append({"error": "Failed to parse thought log"})
-    db_session.thought_logs = json.dumps(existing_logs)
+    # Sally-specific state tracking — skip for control bots
+    if is_sally:
+        db_session.retry_count = result["retry_count"]
+        db_session.prospect_profile = result["new_profile_json"]
+        # Track all state counters
+        if hasattr(db_session, 'consecutive_no_new_info'):
+            db_session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
+        if hasattr(db_session, 'turns_in_current_phase'):
+            db_session.turns_in_current_phase = result.get("turns_in_current_phase", 0)
+        if hasattr(db_session, 'deepest_emotional_depth'):
+            db_session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
+        if hasattr(db_session, 'objection_diffusion_step'):
+            db_session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
+        if hasattr(db_session, 'ownership_substep'):
+            db_session.ownership_substep = result.get("ownership_substep", 0)
+
+    # Append thought log (Sally only — control bots return empty thought logs)
+    existing_logs = []
+    if is_sally:
+        try:
+            existing_logs = json.loads(db_session.thought_logs or "[]")
+        except json.JSONDecodeError:
+            existing_logs = []
+        try:
+            new_log = json.loads(result["thought_log_json"])
+            existing_logs.append(new_log)
+        except json.JSONDecodeError:
+            existing_logs.append({"error": "Failed to parse thought log"})
+        db_session.thought_logs = json.dumps(existing_logs)
 
     # Check session end
     if result["session_ended"]:
@@ -277,62 +298,63 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         try:
             _sd, _md = _serialize_for_sheets(
                 db_session, db,
-                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value, "timestamp": now},
+                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value if current_phase else current_phase_str, "timestamp": now},
             )
             fire_sheets_log("session", _sd, _md)
         except Exception as e:
             logger.error(f"[Session {session_id}] Sheets log (completed) error: {e}")
 
-        # Async quality scoring (fire-and-forget via daemon thread)
-        try:
-            # Snapshot data for the scorer thread (avoid DB session sharing across threads)
-            all_msgs_for_scoring = [
-                {"role": m.role, "content": m.content, "phase": m.phase}
-                for m in messages
-            ]
-            # Add the current user message (not yet in the DB query result)
-            all_msgs_for_scoring.append({"role": "user", "content": request.content, "phase": current_phase.value})
-            # Add Sally's response (use result dict since response_text variable is defined later)
-            all_msgs_for_scoring.append({"role": "assistant", "content": result["response_text"], "phase": new_phase.value})
+        # Async quality scoring — Sally only (fire-and-forget via daemon thread)
+        if is_sally:
+            try:
+                # Snapshot data for the scorer thread (avoid DB session sharing across threads)
+                all_msgs_for_scoring = [
+                    {"role": m.role, "content": m.content, "phase": m.phase}
+                    for m in messages
+                ]
+                # Add the current user message (not yet in the DB query result)
+                all_msgs_for_scoring.append({"role": "user", "content": request.content, "phase": current_phase.value if current_phase else current_phase_str})
+                # Add Sally's response (use result dict since response_text variable is defined later)
+                all_msgs_for_scoring.append({"role": "assistant", "content": result["response_text"], "phase": new_phase.value if new_phase else new_phase_str})
 
-            thought_logs_for_scoring = list(existing_logs)  # already parsed above
-            scoring_session_id = session_id
+                thought_logs_for_scoring = list(existing_logs)  # already parsed above
+                scoring_session_id = session_id
 
-            def _run_quality_scoring():
-                try:
-                    quality_result = score_conversation(all_msgs_for_scoring, thought_logs_for_scoring)
-                    logger.info(f"[Session {scoring_session_id}] Quality score: "
-                                f"mirror={quality_result.mirroring_score}, "
-                                f"energy={quality_result.energy_matching_score}, "
-                                f"structure={quality_result.structure_score}, "
-                                f"arc={quality_result.emotional_arc_score}, "
-                                f"overall={quality_result.overall_score}")
-                    # Store result in DB
-                    from .database import SessionLocal
-                    scoring_db = SessionLocal()
+                def _run_quality_scoring():
                     try:
-                        s = scoring_db.query(DBSession).filter(DBSession.id == scoring_session_id).first()
-                        if s:
-                            # Store quality score as JSON in a field (we'll add it to thought_logs for now)
-                            try:
-                                logs = json.loads(s.thought_logs or "[]")
-                            except json.JSONDecodeError:
-                                logs = []
-                            logs.append({"quality_score": quality_result.model_dump()})
-                            s.thought_logs = json.dumps(logs)
-                            scoring_db.commit()
-                    finally:
-                        scoring_db.close()
-                except Exception as e:
-                    logger.error(f"[Session {scoring_session_id}] Quality scoring failed: {e}")
+                        quality_result = score_conversation(all_msgs_for_scoring, thought_logs_for_scoring)
+                        logger.info(f"[Session {scoring_session_id}] Quality score: "
+                                    f"mirror={quality_result.mirroring_score}, "
+                                    f"energy={quality_result.energy_matching_score}, "
+                                    f"structure={quality_result.structure_score}, "
+                                    f"arc={quality_result.emotional_arc_score}, "
+                                    f"overall={quality_result.overall_score}")
+                        # Store result in DB
+                        from .database import SessionLocal
+                        scoring_db = SessionLocal()
+                        try:
+                            s = scoring_db.query(DBSession).filter(DBSession.id == scoring_session_id).first()
+                            if s:
+                                # Store quality score as JSON in a field (we'll add it to thought_logs for now)
+                                try:
+                                    logs = json.loads(s.thought_logs or "[]")
+                                except json.JSONDecodeError:
+                                    logs = []
+                                logs.append({"quality_score": quality_result.model_dump()})
+                                s.thought_logs = json.dumps(logs)
+                                scoring_db.commit()
+                        finally:
+                            scoring_db.close()
+                    except Exception as e:
+                        logger.error(f"[Session {scoring_session_id}] Quality scoring failed: {e}")
 
-            t = threading.Thread(target=_run_quality_scoring, daemon=True)
-            t.start()
-        except Exception as e:
-            logger.error(f"[Session {session_id}] Quality scoring thread launch failed: {e}")
+                t = threading.Thread(target=_run_quality_scoring, daemon=True)
+                t.start()
+            except Exception as e:
+                logger.error(f"[Session {session_id}] Quality scoring thread launch failed: {e}")
 
-    # Gmail escalation: trigger when entering OWNERSHIP (first time only)
-    if new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
+    # Gmail escalation: trigger when entering OWNERSHIP (first time only) — Sally only
+    if is_sally and new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
         try:
             profile_for_email = json.loads(db_session.prospect_profile or "{}")
             all_msgs = (
@@ -345,7 +367,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             for m in all_msgs:
                 role_label = "Sally" if m.role == "assistant" else "Prospect"
                 transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
-            transcript_lines.append(f"[{current_phase.value}] Prospect: {request.content}")
+            transcript_lines.append(f"[{current_phase.value if current_phase else current_phase_str}] Prospect: {request.content}")
             transcript_text = "\n".join(transcript_lines)
 
             sent = _send_escalation_email(session_id, profile_for_email, transcript_text)
@@ -355,7 +377,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             # Google Sheets: log hot lead
             _sd, _md = _serialize_for_sheets(
                 db_session, db,
-                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value, "timestamp": now},
+                extra_user_msg={"role": "user", "content": request.content, "phase": current_phase.value if current_phase else current_phase_str, "timestamp": now},
             )
             fire_sheets_log("hot_lead", _sd, _md)
         except Exception as e:
@@ -433,13 +455,15 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         role="assistant",
         content=response_text,
         timestamp=time.time(),
-        phase=new_phase.value,
+        phase=new_phase.value if new_phase else new_phase_str,
     )
     db.add(assistant_msg)
     db_session.message_count += 1
     db.commit()
 
-    logger.info(f"[Session {session_id}] Turn complete: {previous_phase.value} -> {new_phase.value} "
+    prev_phase_display = previous_phase.value if previous_phase else current_phase_str
+    new_phase_display = new_phase.value if new_phase else new_phase_str
+    logger.info(f"[Session {session_id}] Turn complete: {prev_phase_display} -> {new_phase_display} "
                 f"(changed={result['phase_changed']}, ended={result['session_ended']})")
 
     return SendMessageResponse(
@@ -448,17 +472,17 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             role="user",
             content=request.content,
             timestamp=now,
-            phase=previous_phase.value,
+            phase=prev_phase_display,
         ),
         assistant_message=MessageResponse(
             id=assistant_msg_id,
             role="assistant",
             content=response_text,
             timestamp=assistant_msg.timestamp,
-            phase=new_phase.value,
+            phase=new_phase_display,
         ),
-        current_phase=new_phase.value,
-        previous_phase=previous_phase.value,
+        current_phase=new_phase_display,
+        previous_phase=prev_phase_display,
         phase_changed=result["phase_changed"],
         session_ended=result["session_ended"],
     )
@@ -499,6 +523,7 @@ def get_session(session_id: str, db: DBSessionType = Depends(get_db)):
         "end_time": db_session.end_time,
         "turn_number": db_session.turn_number,
         "retry_count": db_session.retry_count,
+        "assigned_arm": getattr(db_session, 'assigned_arm', None),
         "messages": [
             {
                 "id": m.id,
@@ -530,6 +555,7 @@ def list_sessions(db: DBSessionType = Depends(get_db)):
             message_count=s.message_count,
             start_time=s.start_time,
             end_time=s.end_time,
+            assigned_arm=getattr(s, 'assigned_arm', None),
         )
         for s in sessions
     ]
