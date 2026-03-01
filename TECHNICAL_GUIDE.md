@@ -4,31 +4,39 @@
 
 1. [Overview](#overview)
 2. [Architecture](#architecture)
-3. [Tech Stack](#tech-stack)
-4. [Project Structure](#project-structure)
-5. [Three-Layer Engine](#three-layer-engine)
-6. [NEPQ Phase Sequence](#nepq-phase-sequence)
-7. [Database Schema](#database-schema)
-8. [API Reference](#api-reference)
-9. [Prospect Profile Model](#prospect-profile-model)
-10. [Situation Playbooks](#situation-playbooks)
-11. [Quality Scoring](#quality-scoring)
-12. [Circuit Breaker](#circuit-breaker)
-13. [External Integrations](#external-integrations)
-14. [Frontend Architecture](#frontend-architecture)
-15. [Data Flow](#data-flow)
-16. [State Machines](#state-machines)
-17. [Edge Cases & Safety Mechanisms](#edge-cases--safety-mechanisms)
-18. [Environment Variables](#environment-variables)
-19. [Deployment](#deployment)
-20. [Debugging & Testing](#debugging--testing)
-21. [Common Modifications](#common-modifications)
+3. [Multi-Bot System (Phase 1B)](#multi-bot-system-phase-1b)
+4. [Tech Stack](#tech-stack)
+5. [Project Structure](#project-structure)
+6. [Three-Layer Engine](#three-layer-engine)
+7. [NEPQ Phase Sequence](#nepq-phase-sequence)
+8. [Database Schema](#database-schema)
+9. [API Reference](#api-reference)
+10. [Prospect Profile Model](#prospect-profile-model)
+11. [Situation Playbooks](#situation-playbooks)
+12. [Quality Scoring](#quality-scoring)
+13. [Circuit Breaker](#circuit-breaker)
+14. [External Integrations](#external-integrations)
+15. [Frontend Architecture](#frontend-architecture)
+16. [Data Flow](#data-flow)
+17. [State Machines](#state-machines)
+18. [Edge Cases & Safety Mechanisms](#edge-cases--safety-mechanisms)
+19. [Environment Variables](#environment-variables)
+20. [Deployment](#deployment)
+21. [Debugging & Testing](#debugging--testing)
+22. [Common Modifications](#common-modifications)
 
 ---
 
 ## Overview
 
 Sally Sells is an AI-powered NEPQ (Neuro-Emotional Persuasion Questioning) sales agent that sells 100x's $10,000 AI Discovery Workshop. The system guides prospects through a 7-phase structured conversation designed to achieve authentic sales engagement and measure "Conviction Delta Score" (CDS) — the change in conviction from pre to post-conversation.
+
+**Phase 1B: Multi-Bot A/B Experiment** — The system now supports three bot personas for A/B testing. Users choose which bot to talk to before starting a conversation:
+- **Sally (NEPQ)** — The full three-layer structured sales engine (the original agent)
+- **Hank (Hypes)** — An aggressive traditional sales bot using urgency, social proof, and ROI framing
+- **Ivy (Informs)** — A neutral information-only bot that presents balanced facts without persuasion
+
+This allows measuring whether Sally's complex NEPQ approach outperforms simpler alternatives via CDS comparison across arms.
 
 **Product being sold:** CEO Nik Shah comes onsite for a full-day Discovery Workshop where he builds a customized AI transformation roadmap identifying $5M+ in annual savings opportunities.
 
@@ -40,12 +48,20 @@ Sally Sells is an AI-powered NEPQ (Neuro-Emotional Persuasion Questioning) sales
 
 ## Architecture
 
-Sally uses a **three-layer pipeline** architecture where each layer has a distinct responsibility:
+The system uses a **bot router** that dispatches to the correct engine based on the session's `assigned_arm`:
 
 ```
 User Message
      |
      v
++------------------+
+|   BOT ROUTER     |
+|  (bot_router.py) |
++------------------+
+     |         |
+     |         +-- Hank/Ivy: Single Claude API call → Response
+     |
+     v (Sally only)
 +------------------+     +------------------+     +------------------+
 |  LAYER 1:        |     |  LAYER 2:        |     |  LAYER 3:        |
 |  Comprehension   | --> |  Decision        | --> |  Response        |
@@ -62,9 +78,102 @@ User Message
                                                    Sally's Response
 ```
 
-The **critical design decision**: Layer 2 is pure deterministic Python code with zero LLM calls, making conversation flow predictable, debuggable, and auditable.
+**Sally's three-layer pipeline** is the core engine. The **critical design decision**: Layer 2 is pure deterministic Python code with zero LLM calls, making conversation flow predictable, debuggable, and auditable.
 
-The orchestrator (`SallyEngine` in `backend/app/agent.py`) wires all three layers together and maintains session state.
+**Control bots** (Hank, Ivy) bypass the three-layer pipeline entirely. They use a single Claude Sonnet API call with a persona-specific system prompt and return the same dict shape as `SallyEngine.process_turn()` so `main.py` handles all bots uniformly.
+
+The orchestrator (`SallyEngine` in `backend/app/agent.py`) wires all three layers together for Sally. The bot router (`bot_router.py`) dispatches to Sally's engine or the appropriate control bot based on the session's `assigned_arm`.
+
+---
+
+## Multi-Bot System (Phase 1B)
+
+### Bot Arms
+
+The system supports three experimental arms, defined by the `BotArm` enum in `backend/app/schemas.py`:
+
+| Arm | Bot | Engine | Phase System | Purpose |
+|-----|-----|--------|-------------|---------|
+| `sally_nepq` | Sally | Three-layer pipeline (Gemini + Python + Claude) | 7 NEPQ phases | Structured NEPQ sales methodology |
+| `hank_hypes` | Hank | Single Claude Sonnet API call | `CONVERSATION` (no phases) | Aggressive traditional sales (control) |
+| `ivy_informs` | Ivy | Single Claude Sonnet API call | `CONVERSATION` (no phases) | Neutral information only (control) |
+
+### Control Bot Architecture
+
+**Files:**
+- `backend/app/bots/base.py` — `ControlBot` base class with shared logic
+- `backend/app/bots/hank.py` — `HankBot` with aggressive sales system prompt
+- `backend/app/bots/ivy.py` — `IvyBot` with neutral informational system prompt
+- `backend/app/bot_router.py` — Dispatches to the correct engine based on `BotArm`
+
+**ControlBot base class** (`bots/base.py`):
+- Lazy Anthropic client (same singleton pattern as `response.py`)
+- `respond(user_message, conversation_history)` → makes a single Claude Sonnet 4 API call with `max_tokens=500`
+- Returns the same dict shape as `SallyEngine.process_turn()` so `main.py` handles all bots uniformly
+- `new_phase` is always `"CONVERSATION"` (control bots have no NEPQ phases)
+- All Sally-specific fields (`new_profile_json`, `thought_log_json`, state counters) return safe defaults
+- `_should_end()` — very conservative; only triggers on a 100-message safety cap. Conversations never auto-end based on message content (the user controls session end via the UI)
+- `_fallback_response()` — returns a generic prompt if the Claude API call fails
+
+**Hank's persona** — aggressive but friendly sales:
+- ROI framing, urgency, social proof, scarcity, assumptive close
+- Never accepts "no" — always has another angle or reframe
+- Pushes toward close in every message
+- Never ends the conversation on his own
+
+**Ivy's persona** — strictly neutral information:
+- Presents pros AND cons equally
+- Includes risks, realistic alternatives, and caveats
+- Never persuades, encourages, or discourages
+- Mentions free alternatives (YouTube, other bootcamps, hiring a consultant)
+- Never uses urgency, scarcity, or social proof
+- Never ends the conversation on her own
+
+### Bot Router (`bot_router.py`)
+
+```python
+route_message(arm: BotArm, user_message, conversation_history, **sally_kwargs) -> dict
+```
+
+- If `arm == BotArm.SALLY_NEPQ`: delegates to `SallyEngine.process_turn()` with all kwargs
+- If `arm == BotArm.HANK_HYPES`: delegates to `HankBot.respond()` (ignores Sally kwargs)
+- If `arm == BotArm.IVY_INFORMS`: delegates to `IvyBot.respond()` (ignores Sally kwargs)
+- Singleton `_hank` and `_ivy` instances (created once, reused)
+- `get_greeting(arm)` returns the appropriate bot's greeting message
+- `BOT_DISPLAY_NAMES` dict maps `BotArm` → human-readable display name ("Sally", "Hank", "Ivy")
+
+### How main.py Handles Multi-Bot
+
+The `send_message` endpoint uses an `is_sally` flag to guard Sally-specific code paths:
+
+```python
+arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
+is_sally = arm == BotArm.SALLY_NEPQ
+```
+
+**Guarded with `if is_sally:`**
+- Session state tracking (retry_count, profile, consecutive_no_new_info, etc.)
+- Thought log appending
+- Quality scoring (async thread)
+- Gmail escalation emails
+- Stripe payment link substitution
+
+**Shared across all bots:**
+- User message saving
+- Conversation history building
+- Bot response saving
+- Session end detection
+- CDS (Conviction Delta Score) tracking
+- Google Sheets logging
+
+**Phase handling:** `current_phase` is `Optional[NepqPhase]` — `None` for control bots since `"CONVERSATION"` isn't in the `NepqPhase` enum. A `current_phase_str` fallback holds the raw string for DB writes and response construction.
+
+### Backward Compatibility
+
+Existing sessions with `NULL` `assigned_arm` auto-route to Sally:
+```python
+arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
+```
 
 ---
 
@@ -135,13 +244,19 @@ sally-sells-experiment/
 │   │   ├── __init__.py
 │   │   ├── main.py              # FastAPI app, all routes, startup logic
 │   │   ├── agent.py             # SallyEngine orchestrator (process_turn)
+│   │   ├── bot_router.py        # Phase 1B: Routes to Sally/Hank/Ivy based on arm
 │   │   ├── database.py          # SQLAlchemy models, DB init, migrations
 │   │   ├── models.py            # Pydantic models (Profile, ThoughtLog, enums)
-│   │   ├── schemas.py           # API request/response schemas (NepqPhase enum)
+│   │   ├── schemas.py           # API request/response schemas (NepqPhase, BotArm)
 │   │   ├── phase_definitions.py # Phase configs, exit criteria, response lengths
 │   │   ├── playbooks.py         # 9 situation playbook templates
 │   │   ├── quality_scorer.py    # Post-conversation quality scoring
 │   │   ├── sheets_logger.py     # Google Sheets webhook logger
+│   │   ├── bots/                # Phase 1B: Control bot implementations
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py          # ControlBot base class (single Claude call)
+│   │   │   ├── hank.py          # HankBot: aggressive sales persona
+│   │   │   └── ivy.py           # IvyBot: neutral information persona
 │   │   └── layers/
 │   │       ├── __init__.py
 │   │       ├── comprehension.py # Layer 1: Gemini-powered message analysis
@@ -377,6 +492,7 @@ PostgreSQL (Neon serverless) with SQLAlchemy ORM. Defined in `backend/app/databa
 | `ownership_substep` | Integer | 0 | OWNERSHIP phase microsequence (0-6) |
 | `prospect_profile` | Text | "{}" | JSON-serialized ProspectProfile |
 | `thought_logs` | Text | "[]" | JSON array of ThoughtLog objects |
+| `assigned_arm` | String? | — | Bot arm: "sally_nepq", "hank_hypes", "ivy_informs" (NULL for legacy sessions → defaults to Sally) |
 | `escalation_sent` | String? | — | Timestamp when escalation email sent |
 
 ### `messages` table (`DBMessage`)
@@ -410,8 +526,8 @@ Base URL: `/api`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/sessions` | Create session (requires `pre_conviction: 1-10`) |
-| `POST` | `/api/sessions/{id}/messages` | Send message, get Sally's response (the core loop) |
+| `POST` | `/api/sessions` | Create session (requires `pre_conviction: 1-10`, optional `selected_bot: BotArm`) |
+| `POST` | `/api/sessions/{id}/messages` | Send message, get bot's response (routed to Sally/Hank/Ivy based on arm) |
 | `GET` | `/api/sessions` | List all sessions with summary metrics |
 | `GET` | `/api/sessions/{id}` | Get full session detail (messages, thought logs, profile) |
 | `POST` | `/api/sessions/{id}/end` | Manually end/abandon session |
@@ -450,16 +566,17 @@ Base URL: `/api`
 This endpoint processes a single conversation turn:
 
 1. Validates session is active (404 if not found, 400 if not active)
-2. Saves user message to DB with current phase
-3. Builds full conversation history from DB
-4. Calls `SallyEngine.process_turn()` with all state counters
-5. Updates all session state from engine result
-6. Appends thought log entry
-7. If session ended: logs to Google Sheets, starts async quality scoring
-8. If entering OWNERSHIP (first time): sends escalation email, logs hot lead
-9. Replaces `[PAYMENT_LINK]` placeholder with real Stripe Checkout URL
-10. Saves assistant message to DB
-11. Returns `SendMessageResponse` with phase change and session end flags
+2. Determines bot arm from `db_session.assigned_arm` (defaults to Sally for NULL)
+3. Saves user message to DB with current phase
+4. Builds full conversation history from DB
+5. Calls `route_message()` which dispatches to Sally's three-layer engine or control bot
+6. Updates session state (Sally-specific state tracking is guarded with `if is_sally:`)
+7. Appends thought log entry (Sally only — control bots return empty thought logs)
+8. If session ended: logs to Google Sheets, starts async quality scoring (Sally only)
+9. If entering OWNERSHIP (first time, Sally only): sends escalation email, logs hot lead
+10. Replaces `[PAYMENT_LINK]` placeholder with real Stripe Checkout URL
+11. Saves assistant message to DB
+12. Returns `SendMessageResponse` with phase change and session end flags
 
 **Error recovery:** If the engine throws, returns a safe fallback response ("How has that been playing out for you day-to-day?") and increments retry count.
 
@@ -568,9 +685,10 @@ Post-generation validation that catches rule violations before responses reach t
 
 ### Anthropic Claude API
 - **Model:** `claude-sonnet-4-20250514`
-- **Used in:** Layer 3 (response generation), Quality Scorer
-- **Client:** Lazy-initialized singleton (`_get_client()`)
-- **Caching:** Ephemeral prompt caching on system prompt
+- **Used in:** Layer 3 (response generation), Quality Scorer, Control Bots (Hank/Ivy)
+- **Client:** Lazy-initialized singletons — separate instances in `response.py` (`_get_client()`) and `bots/base.py` (`get_client()`)
+- **Caching:** Ephemeral prompt caching on system prompt (Layer 3 only)
+- **Control bot config:** `max_tokens=500` (vs Layer 3's phase-specific limits)
 
 ### Google Gemini API
 - **Model:** `gemini-2.0-flash`
@@ -631,12 +749,16 @@ Post-generation validation that catches rule violations before responses reach t
 ### Pages
 
 **ChatPage** — The primary interface:
-- `ConvictionModal` at start: pre-conviction 1-10 selection
-- Real-time message display with `PhaseIndicator` progress bar
+- `ConvictionModal` at start: bot selector (Sally/Hank/Ivy) + pre-conviction 1-10 selection
+- Real-time message display with conditional header:
+  - Sally: `PhaseIndicator` progress bar showing current NEPQ phase
+  - Hank/Ivy: "Talking to: {botDisplayName}" label (no phase indicator)
+- Dynamic typing indicator: "{botDisplayName} is typing..." (not hardcoded to "Sally")
 - Session timer in header with color warnings (amber >25min, red >28min)
 - `PostConvictionModal` when session ends: post-conviction + CDS display
 - Session end on tab close via `pagehide`/`beforeunload` using `navigator.sendBeacon`
 - "Book & Pay" button navigates to BookingPage after session ends
+- `handleNewSession` resets `botDisplayName` and `assignedArm` state
 
 **DashboardPage** — Analytics:
 - Auto-refreshing metrics (every 10 seconds)
@@ -657,8 +779,13 @@ Post-generation validation that catches rule violations before responses reach t
 
 Fully typed fetch-based client with TypeScript interfaces for all API responses.
 
+**Key types:**
+- `BotArm` — `"sally_nepq" | "hank_hypes" | "ivy_informs"`
+- `CreateSessionResponse` — includes `assigned_arm: string` and `bot_display_name: string`
+- `SessionListItem` — includes `assigned_arm?: string`
+
 **Key functions:**
-- `createSession(preConviction)` → `CreateSessionResponse`
+- `createSession(preConviction, selectedBot: BotArm = "sally_nepq")` → `CreateSessionResponse`
 - `sendMessage(sessionId, content)` → `SendMessageResponse`
 - `endSession(sessionId)` → void
 - `endSessionBeacon(sessionId)` → void (uses `navigator.sendBeacon` for reliable tab-close handling)
@@ -687,23 +814,31 @@ Maps phase enum values to display labels, colors, and short labels. Helper funct
 USER MESSAGE ARRIVES
   |
   v
+0. DETERMINE ARM (BotArm from db_session.assigned_arm, default Sally)
+  |
+  v
 1. SAVE TO DB (user message with current phase)
   |
   v
 2. BUILD CONVERSATION HISTORY (all messages from DB, ordered by timestamp)
   |
   v
-3. LAYER 1: COMPREHENSION (Gemini Flash)
+3. ROUTE MESSAGE (bot_router.py)
+   ├─ Hank/Ivy: Single Claude call → skip to step 10 with result dict
+   └─ Sally: Three-layer pipeline continues below
+  |
+  v
+4. LAYER 1: COMPREHENSION (Gemini Flash) [Sally only]
    ├─ Analyzes message + last 10 messages + current profile
    └─ Returns ComprehensionOutput (intent, objection, profile_updates, exit_eval, emotions)
   |
   v
-4. UPDATE PROFILE (apply Layer 1 extractions)
+5. UPDATE PROFILE (apply Layer 1 extractions) [Sally only]
    ├─ List fields: append (deduplicated)
    └─ Scalar fields: replace if non-empty
   |
   v
-5. TRACK STATE
+6. TRACK STATE [Sally only]
    ├─ consecutive_no_new_info: increment or reset to 0
    ├─ deepest_emotional_depth: ratchet up only (surface → moderate → deep)
    ├─ objection_diffusion_step: 0-3 state machine
@@ -711,37 +846,37 @@ USER MESSAGE ARRIVES
    └─ turns_in_current_phase: increment
   |
   v
-6. LAYER 2: DECISION (pure Python)
+7. LAYER 2: DECISION (pure Python) [Sally only]
    ├─ 11 priority-ordered checks
    └─ Returns DecisionOutput (action, target_phase, reason, retry_count)
   |
   v
-7. SITUATION DETECTION (after decision)
+8. SITUATION DETECTION (after decision) [Sally only]
    ├─ Checks for playbook triggers
    └─ May override action to STAY, inject playbook name into objection_context
   |
   v
-8. BUILD EMOTIONAL CONTEXT (dict for Layer 3)
+9. BUILD EMOTIONAL CONTEXT (dict for Layer 3) [Sally only]
    ├─ prospect_exact_words, emotional_cues, energy_level, emotional_tone
    ├─ exit_evaluation_criteria (which criteria are met/unmet)
    ├─ ownership_substep, missing_criteria, missing_info
    └─ Criteria guidance (natural-language steering for unmet criteria)
   |
   v
-9. LAYER 3: RESPONSE (Claude Sonnet)
+10. LAYER 3: RESPONSE (Claude Sonnet) [Sally only]
    ├─ Generates Sally's response constrained by decision + emotional context
    └─ Circuit breaker validates and cleans output
   |
   v
-10. SIDE EFFECTS
+11. SIDE EFFECTS (all bots rejoin here)
     ├─ If [PAYMENT_LINK] in response: create Stripe Checkout, replace placeholder
-    ├─ If session_ended: async quality scoring (daemon thread)
     ├─ If session_ended: log to Google Sheets ("session")
-    ├─ If entering OWNERSHIP (first time): send escalation email
-    └─ If entering OWNERSHIP (first time): log to Google Sheets ("hot_lead")
+    ├─ If session_ended + Sally: async quality scoring (daemon thread)
+    ├─ If entering OWNERSHIP + Sally (first time): send escalation email
+    └─ If entering OWNERSHIP + Sally (first time): log to Google Sheets ("hot_lead")
   |
   v
-11. SAVE ASSISTANT MESSAGE TO DB + RETURN TO CLIENT
+12. SAVE ASSISTANT MESSAGE TO DB + RETURN TO CLIENT
     └─ Response includes: user_message, assistant_message, current_phase,
        previous_phase, phase_changed, session_ended
 ```
@@ -750,10 +885,12 @@ USER MESSAGE ARRIVES
 
 ```
 1. Generate 8-char uppercase UUID session ID
-2. Create DBSession (status=active, phase=CONNECTION, pre_conviction, empty profile)
-3. Generate greeting via SallyEngine.get_greeting()
-4. Create greeting DBMessage (role=assistant, phase=CONNECTION)
-5. Return CreateSessionResponse (session_id, phase, pre_conviction, greeting)
+2. Determine bot arm from request (default: sally_nepq)
+3. Set initial phase: CONNECTION for Sally, "CONVERSATION" for Hank/Ivy
+4. Create DBSession (status=active, phase, pre_conviction, assigned_arm, empty profile)
+5. Generate greeting via bot_get_greeting(arm) (dispatches to correct bot)
+6. Create greeting DBMessage (role=assistant, phase)
+7. Return CreateSessionResponse (session_id, phase, pre_conviction, assigned_arm, bot_display_name, greeting)
 ```
 
 ---
@@ -879,6 +1016,17 @@ When the phase changes, these counters reset to 0:
 | Quote-wrapped response | Strips wrapping `"..."` before circuit breaker |
 | Closing messages | Relaxed to 10-sentence limit and 300 max tokens |
 
+### Multi-Bot Edge Cases (Phase 1B)
+| Case | Handling |
+|------|---------|
+| NULL `assigned_arm` (legacy session) | Defaults to `BotArm.SALLY_NEPQ` via fallback |
+| `"CONVERSATION"` not in `NepqPhase` enum | `current_phase` set to `None` for control bots; `current_phase_str` holds raw string for DB writes |
+| Control bot Claude API failure | Falls back to generic response: "Could you tell me more about what you're thinking?" |
+| User says "not interested" / "no thanks" to Hank/Ivy | Session does NOT end — these are product objections, not conversation-exit signals |
+| Session end for control bots | Only via 100-message safety cap or user action (UI button / tab close) |
+| Sally-specific code with control bot | All guarded with `if is_sally:` — state tracking, thought logs, quality scoring, Gmail escalation |
+| `.value` on None phase | All `current_phase.value` references use fallback pattern: `current_phase.value if current_phase else current_phase_str` |
+
 ### API Layer Edge Cases
 | Case | Handling |
 |------|---------|
@@ -893,7 +1041,7 @@ When the phase changes, these counters reset to 0:
 
 ## Environment Variables
 
-All environment variables are loaded once in `database.py` via `load_dotenv()`. No other module should call `load_dotenv()`.
+All environment variables are loaded once in `database.py` via `load_dotenv(override=True)`. The `override=True` flag ensures `.env` file values take precedence over empty/stale system environment variables. No other module should call `load_dotenv()`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -977,6 +1125,8 @@ All loggers use the `sally.*` namespace at INFO level by default:
 | `sally.engine` | Orchestrator: per-turn layer results, state tracking, latency |
 | `sally.comprehension` | Layer 1: Gemini calls, parse errors, retries |
 | `sally.response` | Layer 3: Claude calls, circuit breaker violations |
+| `sally.bots` | Control bots (Hank/Ivy): API calls, errors, fallbacks |
+| `sally.router` | Bot router: dispatch decisions |
 | `sally.quality` | Quality scorer: dimension scores, errors |
 | `sally.sheets` | Google Sheets webhook: dispatch, HTTP responses, errors |
 | `sally.startup` | Database initialization timing, migration results |
@@ -1029,6 +1179,12 @@ This gives complete visibility into why Sally said what she said at every turn, 
 | Update criteria steering guidance | `backend/app/layers/response.py` (CRITERIA_GUIDANCE dict) |
 | Add a new API endpoint | `backend/app/main.py` |
 | Add a new frontend page | Create `frontend/src/pages/{Name}Page.tsx` + add route in `frontend/src/App.tsx` |
-| Change the greeting | `backend/app/agent.py` (SallyEngine.get_greeting) |
+| Change Sally's greeting | `backend/app/agent.py` (SallyEngine.get_greeting) |
+| Change Hank's or Ivy's greeting | `backend/app/bots/hank.py` or `backend/app/bots/ivy.py` (get_greeting method) |
+| Modify Hank's sales persona | `backend/app/bots/hank.py` (system_prompt) |
+| Modify Ivy's neutral persona | `backend/app/bots/ivy.py` (system_prompt) |
+| Add a new control bot | Create `backend/app/bots/newbot.py` (extend ControlBot), add to `BotArm` enum in `schemas.py`, add to `bot_router.py`, add to frontend `BOT_OPTIONS` in `ConvictionModal.tsx` |
+| Change control bot model/max_tokens | `backend/app/bots/base.py` (model and max_tokens in respond method) |
+| Change session end behavior for control bots | `backend/app/bots/base.py` (_should_end method) |
 | Modify Layer 1 analysis prompt | `backend/app/layers/comprehension.py` (COMPREHENSION_SYSTEM_PROMPT_BASE, build_comprehension_prompt) |
-| Change the LLM model | `backend/app/layers/comprehension.py` (Gemini model name) or `backend/app/layers/response.py` (Claude model name) |
+| Change the LLM model | `backend/app/layers/comprehension.py` (Gemini model name) or `backend/app/layers/response.py` (Claude model name) or `backend/app/bots/base.py` (control bot model) |
