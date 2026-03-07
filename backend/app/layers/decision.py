@@ -100,6 +100,7 @@ def make_decision(
     deepest_emotional_depth: str = "surface",
     objection_diffusion_step: int = 0,
     ownership_substep: int = 0,
+    memory_context: str = "",
 ) -> DecisionOutput:
     """
     The core decision function. Pure logic, no LLM.
@@ -227,14 +228,17 @@ def make_decision(
 
     # 5. Minimum turn check — prevent advancing too quickly
     #    Does NOT increment retry_count: pacing is not a failure signal.
+    #    EXCEPTION: Returning visitors in early phases (CONNECTION/SITUATION) can skip
+    #    minimum turns since memory already contains the needed context.
     min_turns = get_min_turns(current_phase)
     if turns_in_current_phase < min_turns:
-        return DecisionOutput(
-            action="STAY",
-            target_phase=current_phase.value,
-            reason=f"Minimum turns not reached: {turns_in_current_phase}/{min_turns} in {current_phase.value}.",
-            retry_count=retry_count,
-        )
+        if not (memory_context and current_phase in {NepqPhase.CONNECTION, NepqPhase.SITUATION}):
+            return DecisionOutput(
+                action="STAY",
+                target_phase=current_phase.value,
+                reason=f"Minimum turns not reached: {turns_in_current_phase}/{min_turns} in {current_phase.value}.",
+                retry_count=retry_count,
+            )
 
     # === Exit criteria evaluation (CHECKLIST-BASED) — checked BEFORE probe ===
 
@@ -527,6 +531,7 @@ def detect_situation(
     consecutive_no_new_info: int = 0,
     turns_in_current_phase: int = 0,
     objection_diffusion_step: int = 0,
+    memory_context: str = "",
 ) -> str | None:
     """
     Situation Playbook detector.
@@ -539,6 +544,10 @@ def detect_situation(
     returns inside make_decision() — this function catches additional
     situations that overlay on the default decision.
     """
+    # 0. Returning visitor reconnect — fire on first turn of CONNECTION
+    if memory_context and current_phase == NepqPhase.CONNECTION and turns_in_current_phase <= 1:
+        return "relationship_reconnect"
+
     # Skip if decision already has a playbook assigned (from early returns)
     if decision.objection_context and "PLAYBOOK:" in (decision.objection_context or ""):
         return None

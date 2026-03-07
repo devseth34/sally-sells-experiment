@@ -6,7 +6,8 @@ import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
-import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
+import { AuthModal } from "../components/chat/AuthModal.tsx";
+import { createSession, sendMessage, endSession, endSessionBeacon, checkActiveSession, getSavedUserInfo, clearAuth } from "../lib/api";
 import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
@@ -22,9 +23,24 @@ export function ChatPage() {
   const [showPostModal, setShowPostModal] = useState(false);
   const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
 
+  // Auth state
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [userInfo, setUserInfo] = useState<{ email: string; name: string } | null>(getSavedUserInfo());
+
   // Phase 1B: Multi-bot state
   const [botDisplayName, setBotDisplayName] = useState<string>("Sally");
   const [assignedArm, setAssignedArm] = useState<string>("sally_nepq");
+
+  // Session resumption state
+  const [resumeData, setResumeData] = useState<{
+    sessionId: string;
+    phase: string;
+    botName: string;
+    arm: string;
+    messages: MessageResponse[];
+    messageCount: number;
+  } | null>(null);
+  const [checkingResume, setCheckingResume] = useState(true);
 
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -64,6 +80,32 @@ export function ChatPage() {
     };
   }, [sessionId, sessionEnded]);
 
+  // Check for resumable session on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      try {
+        const data = await checkActiveSession();
+        if (!cancelled && data && data.messages.length > 0) {
+          setResumeData({
+            sessionId: data.session_id,
+            phase: data.current_phase,
+            botName: data.bot_display_name,
+            arm: data.assigned_arm,
+            messages: data.messages,
+            messageCount: data.messages.length,
+          });
+        }
+      } catch {
+        // Silently fail — just show normal start screen
+      } finally {
+        if (!cancelled) setCheckingResume(false);
+      }
+    }
+    check();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleStartSession = async (score: number, bot: BotArm) => {
     try {
       setIsLoading(true);
@@ -82,6 +124,17 @@ export function ChatPage() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleResumeSession = () => {
+    if (!resumeData) return;
+    setSessionId(resumeData.sessionId);
+    setCurrentPhase(resumeData.phase);
+    setBotDisplayName(resumeData.botName);
+    setAssignedArm(resumeData.arm);
+    setMessages(resumeData.messages);
+    setResumeData(null);
+    setSeconds(0);
   };
 
   const handleSendMessage = async (content: string) => {
@@ -136,6 +189,7 @@ export function ChatPage() {
     setCdsResult(null);
     setBotDisplayName("Sally");
     setAssignedArm("sally_nepq");
+    setResumeData(null);
     setSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     setShowModal(true);
@@ -144,6 +198,13 @@ export function ChatPage() {
   return (
     <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
+
+      {showAuthModal && (
+        <AuthModal
+          onComplete={() => { setShowAuthModal(false); setUserInfo(getSavedUserInfo()); }}
+          onSkip={() => setShowAuthModal(false)}
+        />
+      )}
 
       {showModal && <ConvictionModal onStart={handleStartSession} />}
 
@@ -161,16 +222,67 @@ export function ChatPage() {
       {!sessionId && !showModal && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
+            {userInfo ? (
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="text-xs text-zinc-400">Signed in as {userInfo.name || userInfo.email}</span>
+                <button
+                  onClick={() => { clearAuth(); setUserInfo(null); }}
+                  className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors ml-1"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors mb-4 block mx-auto"
+              >
+                Sign in for persistent memory →
+              </button>
+            )}
             <h2 className="text-lg font-semibold mb-2">Sally Sells</h2>
             <p className="text-sm text-zinc-500 mb-6">
               NEPQ-powered sales agent for 100x Discovery Workshop
             </p>
-            <button
-              onClick={() => setShowModal(true)}
-              className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
-            >
-              Start Conversation
-            </button>
+
+            {checkingResume ? (
+              <p className="text-xs text-zinc-600">Checking for previous session...</p>
+            ) : resumeData ? (
+              <div className="space-y-3">
+                <div className="bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-left max-w-sm mx-auto">
+                  <p className="text-xs text-zinc-400 mb-1">Previous conversation found</p>
+                  <p className="text-sm text-zinc-300">
+                    {resumeData.messageCount} messages with {resumeData.botName}
+                  </p>
+                  <p className="text-xs text-zinc-500 mt-1">Phase: {resumeData.phase}</p>
+                </div>
+                <div className="flex gap-2 justify-center">
+                  <button
+                    onClick={handleResumeSession}
+                    className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
+                  >
+                    Continue Conversation
+                  </button>
+                  <button
+                    onClick={() => {
+                      setResumeData(null);
+                      setShowModal(true);
+                    }}
+                    className="h-10 px-6 rounded-md text-sm font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+                  >
+                    Start New
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowModal(true)}
+                className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
+              >
+                Start Conversation
+              </button>
+            )}
           </div>
         </div>
       )}

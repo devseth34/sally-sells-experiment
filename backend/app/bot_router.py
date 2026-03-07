@@ -40,6 +40,7 @@ def route_message(
     arm: BotArm,
     user_message: str,
     conversation_history: list[dict],
+    memory_context: str = "",
     # Sally-specific params (ignored for Hank/Ivy):
     current_phase: NepqPhase = NepqPhase.CONNECTION,
     profile_json: str = "{}",
@@ -75,13 +76,14 @@ def route_message(
             deepest_emotional_depth=deepest_emotional_depth,
             objection_diffusion_step=objection_diffusion_step,
             ownership_substep=ownership_substep,
+            memory_context=memory_context,
         )
 
     elif arm == BotArm.HANK_HYPES:
-        return _hank.respond(user_message, conversation_history)
+        return _hank.respond(user_message, conversation_history, memory_context=memory_context)
 
     elif arm == BotArm.IVY_INFORMS:
-        return _ivy.respond(user_message, conversation_history)
+        return _ivy.respond(user_message, conversation_history, memory_context=memory_context)
 
     else:
         raise ValueError(f"Unknown arm: {arm}")

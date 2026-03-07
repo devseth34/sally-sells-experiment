@@ -1,5 +1,128 @@
 const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000") + "/api";
 
+// Persistent visitor identity — survives page refresh and browser close
+export function getOrCreateVisitorId(): string {
+  const key = "sally_visitor_id";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+
+// --- Authentication ---
+
+export interface AuthResponse {
+  token: string;
+  user_id: string;
+  email: string;
+  display_name?: string;
+}
+
+export interface IdentifyResponse {
+  identified: boolean;
+  user_id?: string;
+  display_name?: string;
+  has_memory: boolean;
+}
+
+// Token management
+export function getAuthToken(): string | null {
+  return localStorage.getItem("sally_auth_token");
+}
+
+export function setAuthToken(token: string): void {
+  localStorage.setItem("sally_auth_token", token);
+}
+
+export function clearAuth(): void {
+  localStorage.removeItem("sally_auth_token");
+  localStorage.removeItem("sally_user_email");
+  localStorage.removeItem("sally_user_name");
+}
+
+export function isAuthenticated(): boolean {
+  return !!getAuthToken();
+}
+
+export function getSavedUserInfo(): { email: string; name: string } | null {
+  const email = localStorage.getItem("sally_user_email");
+  if (!email) return null;
+  return { email, name: localStorage.getItem("sally_user_name") || "" };
+}
+
+// Auth headers helper — includes Bearer token if available
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
+export async function register(
+  email: string,
+  password: string,
+  displayName?: string,
+  phone?: string,
+): Promise<AuthResponse> {
+  const visitorId = getOrCreateVisitorId();
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      password,
+      display_name: displayName,
+      phone,
+      visitor_id: visitorId,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Registration failed");
+  }
+  const data: AuthResponse = await res.json();
+  setAuthToken(data.token);
+  localStorage.setItem("sally_user_email", data.email);
+  if (data.display_name) localStorage.setItem("sally_user_name", data.display_name);
+  return data;
+}
+
+export async function login(email: string, password: string): Promise<AuthResponse> {
+  const visitorId = getOrCreateVisitorId();
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, visitor_id: visitorId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || "Login failed");
+  }
+  const data: AuthResponse = await res.json();
+  setAuthToken(data.token);
+  localStorage.setItem("sally_user_email", data.email);
+  if (data.display_name) localStorage.setItem("sally_user_name", data.display_name);
+  return data;
+}
+
+export async function identifyByNamePhone(
+  fullName: string,
+  phone: string,
+): Promise<IdentifyResponse> {
+  const visitorId = getOrCreateVisitorId();
+  const res = await fetch(`${API_BASE}/auth/identify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name: fullName, phone, visitor_id: visitorId }),
+  });
+  if (!res.ok) throw new Error("Identification failed");
+  return res.json();
+}
+
+// --- Session & Message Types ---
+
 export type BotArm = "sally_nepq" | "hank_hypes" | "ivy_informs";
 
 export interface MessageResponse {
@@ -17,6 +140,17 @@ export interface CreateSessionResponse {
   assigned_arm: string;
   bot_display_name: string;
   greeting: MessageResponse;
+  visitor_id?: string;
+}
+
+export interface ResumeSessionResponse {
+  session_id: string;
+  current_phase: string;
+  assigned_arm: string;
+  bot_display_name: string;
+  messages: MessageResponse[];
+  visitor_id: string;
+  can_resume: boolean;
 }
 
 export interface SendMessageResponse {
@@ -64,20 +198,43 @@ export interface MetricsResponse {
   failure_modes: Array<{ phase: string; count: number }>;
 }
 
+// --- Session Management (with auth headers) ---
+
 export async function createSession(preConviction: number, selectedBot: BotArm = "sally_nepq"): Promise<CreateSessionResponse> {
+  const visitorId = getOrCreateVisitorId();
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pre_conviction: preConviction, selected_bot: selectedBot }),
+    headers: authHeaders(),
+    body: JSON.stringify({
+      pre_conviction: preConviction,
+      selected_bot: selectedBot,
+      visitor_id: visitorId,
+    }),
   });
   if (!res.ok) throw new Error(`Failed to create session: ${res.statusText}`);
   return res.json();
 }
 
+export async function checkActiveSession(): Promise<ResumeSessionResponse | null> {
+  const visitorId = getOrCreateVisitorId();
+  try {
+    const headers: Record<string, string> = {};
+    const token = getAuthToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(`${API_BASE}/visitors/${visitorId}/active-session`, { headers });
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 export async function sendMessage(sessionId: string, content: string): Promise<SendMessageResponse> {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify({ content }),
   });
   if (!res.ok) throw new Error(`Failed to send message: ${res.statusText}`);
@@ -176,4 +333,18 @@ export async function submitPostConviction(sessionId: string, postConviction: nu
 
 export function getExportCsvUrl(): string {
   return `${API_BASE}/export/csv`;
+}
+
+/**
+ * Delete all stored memory for the current visitor and reset localStorage identity.
+ * "Forget Me" — full privacy wipe.
+ */
+export async function clearVisitorMemory(): Promise<void> {
+  const visitorId = getOrCreateVisitorId();
+  const res = await fetch(`${API_BASE}/visitors/${visitorId}/memory`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`Failed to clear memory: ${res.statusText}`);
+  // Remove localStorage visitor identity so next session creates a fresh one
+  localStorage.removeItem("sally_visitor_id");
 }

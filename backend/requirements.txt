@@ -10,3 +10,5 @@ google-auth
 google-generativeai
 requests
 eval-type-backport
+bcrypt
+python-jose[cryptography]

@@ -533,6 +533,7 @@ def build_response_prompt(
     profile: ProspectProfile,
     emotional_context: dict | None = None,
     probe_mode: bool = False,
+    memory_context: str = "",
 ) -> str:
     """Build the response generation prompt for Layer 3."""
 
@@ -1193,7 +1194,30 @@ If the prospect asks something not covered here, say you'll have the team follow
 {end_instructions}
 {contact_instructions}
 {fact_sheet_instructions}
+{f"""
+RETURNING VISITOR — YOU HAVE HISTORY WITH THIS PERSON:
+{memory_context}
 
+HOW TO USE THIS RELATIONSHIP:
+DO:
+- Reference shared history naturally: "How's the team doing?" not "You previously mentioned your team was understaffed"
+- Skip questions you already know the answer to (name, role, company, basic situation)
+- Match the relationship level from prior sessions — if rapport was warm, be warm from the start
+- Use their language style and energy level from memory
+- If they had a price objection before, rebuild value before mentioning price again
+- If they completed a free workshop, bridge toward the paid offering naturally
+- Reference emotional topics, not emotions: "How's that hiring situation?" not "I know you were frustrated"
+
+DO NOT:
+- Say "I remember from last time..." or "You told me that..."
+- List or recite facts from memory
+- Re-ask questions you already know the answer to
+- Start discovery from scratch when you already know their situation
+- Mention specific details about previous objections directly
+
+CRITICAL: You are a person who KNOWS this person, not a system that LOOKED THEM UP.
+Use knowledge the way a friend would — naturally, selectively, and in service of the conversation.
+""" if memory_context else ""}
 WHAT WE KNOW ABOUT THIS PROSPECT:
 {json.dumps(profile_dict, indent=2) if profile_dict else "Limited info so far."}
 
@@ -1234,6 +1258,7 @@ def generate_response(
     profile: ProspectProfile,
     emotional_context: dict | None = None,
     probe_mode: bool = False,
+    memory_context: str = "",
 ) -> str:
     """
     Generate Sally's response using Claude API.
@@ -1260,6 +1285,7 @@ def generate_response(
         decision, user_message, conversation_history, profile,
         emotional_context=emotional_context,
         probe_mode=probe_mode,
+        memory_context=memory_context,
     )
 
     # Closing messages get slightly more room for a warm wrap-up

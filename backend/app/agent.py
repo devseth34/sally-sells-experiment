@@ -103,6 +103,7 @@ class SallyEngine:
         deepest_emotional_depth: str = "surface",
         objection_diffusion_step: int = 0,
         ownership_substep: int = 0,
+        memory_context: str = "",
     ) -> dict:
         """
         Process a single conversation turn through all three layers.
@@ -140,6 +141,7 @@ class SallyEngine:
             user_message=user_message,
             conversation_history=conversation_history,
             prospect_profile=profile,
+            memory_context=memory_context,
         )
         l1_ms = (time.monotonic() - l1_start) * 1000
         logger.info(f"[Turn {turn_number}] Layer 1 result ({l1_ms:.0f}ms): intent={comprehension.user_intent}, "
@@ -329,6 +331,7 @@ class SallyEngine:
             deepest_emotional_depth=deepest_emotional_depth,
             objection_diffusion_step=objection_diffusion_step,
             ownership_substep=ownership_substep,
+            memory_context=memory_context,
         )
         l2_ms = (time.monotonic() - l2_start) * 1000
         logger.info(f"[Turn {turn_number}] Layer 2 result ({l2_ms:.0f}ms): action={decision.action}, "
@@ -345,6 +348,7 @@ class SallyEngine:
             consecutive_no_new_info=consecutive_no_new_info,
             turns_in_current_phase=turns_in_current_phase,
             objection_diffusion_step=objection_diffusion_step,
+            memory_context=memory_context,
         )
         if playbook:
             from app.playbooks import PLAYBOOKS
@@ -397,6 +401,7 @@ class SallyEngine:
             profile=profile,
             emotional_context=emotional_context,
             probe_mode=is_probe,
+            memory_context=memory_context,
         )
         l3_ms = (time.monotonic() - l3_start) * 1000
         total_ms = (time.monotonic() - turn_start) * 1000

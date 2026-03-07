@@ -44,6 +44,19 @@ def _get_session_local():
     return _SessionLocal
 
 
+class DBUser(Base):
+    """Registered user account for persistent cross-device memory."""
+    __tablename__ = "users"
+    id = Column(String, primary_key=True)           # UUID
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    display_name = Column(String, nullable=True)
+    phone = Column(String, nullable=True, index=True)
+    created_at = Column(Float, nullable=False)
+    last_login_at = Column(Float, nullable=True)
+    is_active = Column(Integer, default=1)  # 1=active, 0=disabled. Integer for SQLite compat.
+
+
 class DBSession(Base):
     __tablename__ = "sessions"
     id = Column(String, primary_key=True)
@@ -71,6 +84,12 @@ class DBSession(Base):
     # Phase 1B: Multi-bot experiment
     assigned_arm = Column(String, nullable=True)  # 'sally_nepq', 'hank_hypes', 'ivy_informs'
 
+    # Persistent memory: visitor identity
+    visitor_id = Column(String, nullable=True, index=True)
+
+    # User authentication
+    user_id = Column(String, nullable=True, index=True)  # FK to users.id (nullable for anonymous)
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -80,6 +99,37 @@ class DBMessage(Base):
     content = Column(String)
     timestamp = Column(Float)
     phase = Column(String)
+
+
+class DBMemoryFact(Base):
+    """Long-term memory: individual facts extracted from conversations."""
+    __tablename__ = "memory_facts"
+    id = Column(String, primary_key=True)
+    visitor_id = Column(String, index=True, nullable=False)
+    user_id = Column(String, nullable=True, index=True)  # Set when user is authenticated
+    source_session_id = Column(String, nullable=False)
+    category = Column(String, nullable=False)  # identity, situation, pain_point, preference, objection_history
+    fact_key = Column(String, nullable=False)   # e.g., "name", "role", "company"
+    fact_value = Column(Text, nullable=False)
+    confidence = Column(Float, default=1.0)
+    created_at = Column(Float, nullable=False)
+    updated_at = Column(Float, nullable=False)
+    is_active = Column(Integer, default=1)  # 1=active, 0=superseded. Using Integer for SQLite compat.
+
+
+class DBSessionSummary(Base):
+    """Long-term memory: per-session summaries for quick context loading."""
+    __tablename__ = "session_summaries"
+    id = Column(String, primary_key=True)
+    visitor_id = Column(String, index=True, nullable=False)
+    user_id = Column(String, nullable=True, index=True)
+    session_id = Column(String, nullable=False)
+    summary_text = Column(Text, nullable=False)
+    outcome = Column(String, nullable=False)  # completed, abandoned, chose_free, chose_paid, hard_no
+    final_phase = Column(String, nullable=False)
+    key_pain_points = Column(Text, default="[]")  # JSON array
+    key_objections = Column(Text, default="[]")    # JSON array
+    created_at = Column(Float, nullable=False)
 
 
 def init_db():
@@ -117,12 +167,51 @@ def init_db():
             "objection_diffusion_step": "ALTER TABLE sessions ADD COLUMN objection_diffusion_step INTEGER DEFAULT 0",
             "ownership_substep": "ALTER TABLE sessions ADD COLUMN ownership_substep INTEGER DEFAULT 0",
             "assigned_arm": "ALTER TABLE sessions ADD COLUMN assigned_arm VARCHAR",
+            "visitor_id": "ALTER TABLE sessions ADD COLUMN visitor_id VARCHAR",
+            "user_id": "ALTER TABLE sessions ADD COLUMN user_id VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():
             if col_name not in existing_columns:
                 conn.execute(text(sql))
                 applied += 1
+
+        # Create indexes for sessions columns
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS ix_sessions_visitor_id ON sessions (visitor_id)",
+            "CREATE INDEX IF NOT EXISTS ix_sessions_user_id ON sessions (user_id)",
+        ]:
+            try:
+                conn.execute(text(idx_sql))
+            except Exception:
+                pass
+
+        # Migrate: add user_id to memory_facts and session_summaries
+        # These tables already exist in production, so create_all() won't add the new column
+        try:
+            mf_cols = {col["name"] for col in inspector.get_columns("memory_facts")}
+            if "user_id" not in mf_cols:
+                conn.execute(text("ALTER TABLE memory_facts ADD COLUMN user_id VARCHAR"))
+                applied += 1
+            try:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_memory_facts_user_id ON memory_facts (user_id)"))
+            except Exception:
+                pass
+        except Exception:
+            pass  # Table may not exist yet (create_all handles it)
+
+        try:
+            ss_cols = {col["name"] for col in inspector.get_columns("session_summaries")}
+            if "user_id" not in ss_cols:
+                conn.execute(text("ALTER TABLE session_summaries ADD COLUMN user_id VARCHAR"))
+                applied += 1
+            try:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_session_summaries_user_id ON session_summaries (user_id)"))
+            except Exception:
+                pass
+        except Exception:
+            pass  # Table may not exist yet (create_all handles it)
+
         conn.commit()
     migration_ms = (time.monotonic() - t1) * 1000
     logger.info(f"init_db: migration check took {migration_ms:.0f}ms ({applied} applied)")

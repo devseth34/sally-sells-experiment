@@ -102,6 +102,7 @@ def build_comprehension_prompt(
     user_message: str,
     conversation_history: list[dict],
     prospect_profile: ProspectProfile,
+    memory_context: str = "",
 ) -> str:
     """Build the analysis prompt for Layer 1."""
 
@@ -138,7 +139,20 @@ EXIT CRITERIA — Evaluate EACH as true/false:
 
 PROSPECT PROFILE SO FAR:
 {json.dumps(profile_dict, indent=2) if profile_dict else "Nothing yet."}
+{f"""
+LONG-TERM MEMORY (from prior sessions with this person):
+{memory_context}
 
+IMPORTANT — MEMORY RULES:
+1. EXIT CRITERIA: Consider facts from long-term memory as ALREADY KNOWN.
+   If memory says their name is Alex and they work at TechCorp, then name_shared and company_shared criteria are MET even if not mentioned in the current conversation.
+
+2. EMOTIONAL CONTINUITY: If memory indicates rapport was warm but the prospect now seems cold or distant, flag emotional_tone accordingly. A shift from prior rapport is significant.
+
+3. PROFILE UPDATES: Only update profile fields if the prospect CORRECTS or adds NEW information. Do NOT re-extract facts already known from memory (e.g., don't re-populate name from memory — it's already seeded).
+
+4. PHASE EVALUATION FOR RETURNING VISITORS: If memory contains substantial context (pain points, situation details), the prospect may naturally skip past early phases. Evaluate exit criteria honestly — if criteria are already met from memory + current conversation, mark them as met. Don't artificially hold them in early phases.
+""" if memory_context else ""}
 CONVERSATION:
 {history_text}
 
@@ -206,6 +220,7 @@ def run_comprehension(
     user_message: str,
     conversation_history: list[dict],
     prospect_profile: ProspectProfile,
+    memory_context: str = "",
 ) -> ComprehensionOutput:
     """
     Run Layer 1 analysis on a user message using Gemini Flash.
@@ -213,7 +228,8 @@ def run_comprehension(
 
     system_prompt = _build_system_prompt(current_phase)
     user_prompt = build_comprehension_prompt(
-        current_phase, user_message, conversation_history, prospect_profile
+        current_phase, user_message, conversation_history, prospect_profile,
+        memory_context=memory_context
     )
 
     _ensure_gemini_configured()

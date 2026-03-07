@@ -32,6 +32,7 @@ class BotArm(str, Enum):
 class CreateSessionRequest(BaseModel):
     pre_conviction: int = Field(..., ge=1, le=10, description="Pre-chat conviction score 1-10")
     selected_bot: BotArm = Field(default=BotArm.SALLY_NEPQ, description="Which bot to talk to")
+    visitor_id: Optional[str] = Field(default=None, description="Persistent visitor identifier for memory/resumption")
 
 
 class SendMessageRequest(BaseModel):
@@ -57,6 +58,17 @@ class CreateSessionResponse(BaseModel):
     assigned_arm: str
     bot_display_name: str
     greeting: MessageResponse
+    visitor_id: Optional[str] = None
+
+
+class ResumeSessionResponse(BaseModel):
+    session_id: str
+    current_phase: str
+    assigned_arm: str
+    bot_display_name: str
+    messages: List[MessageResponse]
+    visitor_id: str
+    can_resume: bool = True
 
 
 class SendMessageResponse(BaseModel):
@@ -117,3 +129,40 @@ class MetricsResponse(BaseModel):
     conversion_rate: float
     phase_distribution: dict
     failure_modes: List[dict]
+
+
+# --- Authentication Models ---
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., description="Email address")
+    password: str = Field(..., min_length=6, description="Password (min 6 characters)")
+    display_name: Optional[str] = Field(default=None, description="Full name")
+    phone: Optional[str] = Field(default=None, description="Phone number")
+    visitor_id: Optional[str] = Field(default=None, description="Existing visitor_id to merge memory from")
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="Email address")
+    password: str = Field(..., description="Password")
+    visitor_id: Optional[str] = Field(default=None, description="Current visitor_id to merge on login")
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user_id: str
+    email: str
+    display_name: Optional[str] = None
+
+
+class IdentifyRequest(BaseModel):
+    """For non-authenticated identification via name + phone."""
+    full_name: str = Field(..., min_length=1, description="Full name")
+    phone: str = Field(..., min_length=6, description="Phone number")
+    visitor_id: Optional[str] = Field(default=None, description="Current visitor_id")
+
+
+class IdentifyResponse(BaseModel):
+    identified: bool
+    user_id: Optional[str] = None
+    display_name: Optional[str] = None
+    has_memory: bool = False

@@ -41,6 +41,7 @@ class ControlBot:
         self,
         user_message: str,
         conversation_history: list[dict],
+        memory_context: str = "",
     ) -> dict:
         """
         Generate a response using a single Claude API call.
@@ -58,11 +59,15 @@ class ControlBot:
             role = "user" if msg["role"] == "user" else "assistant"
             messages.append({"role": role, "content": msg["content"]})
 
+        system = self.system_prompt
+        if memory_context:
+            system = f"{self.system_prompt}\n\n{memory_context}"
+
         try:
             response = get_client().messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=500,
-                system=self.system_prompt,
+                system=system,
                 messages=messages,
             )
             response_text = response.content[0].text.strip()

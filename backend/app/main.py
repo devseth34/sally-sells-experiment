@@ -23,7 +23,8 @@ from email.mime.multipart import MIMEMultipart
 
 import os
 import stripe
-from .database import get_db, DBSession, DBMessage, init_db
+from typing import Optional
+from .database import get_db, DBSession, DBMessage, DBUser, init_db
 from .schemas import (
     NepqPhase,
     BotArm,
@@ -37,11 +38,27 @@ from .schemas import (
     MetricsResponse,
     PostConvictionRequest,
     PostConvictionResponse,
+    ResumeSessionResponse,
+    RegisterRequest,
+    LoginRequest,
+    AuthResponse,
+    IdentifyRequest,
+    IdentifyResponse,
+)
+from .auth import (
+    register_user,
+    login_user,
+    create_token,
+    get_optional_user,
+    get_required_user,
+    merge_visitor_memory_to_user,
+    find_user_by_name_and_phone,
 )
 from .agent import SallyEngine
 from .bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
 from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
+from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt
 import threading
 
 logging.basicConfig(level=logging.INFO)
@@ -75,6 +92,124 @@ def on_startup():
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Sally Sells API", "version": "2.0.0", "engine": "three-layer-nepq"}
+
+
+# --- Authentication ---
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+def register(request: RegisterRequest, db: DBSessionType = Depends(get_db)):
+    """Register a new user account."""
+    user = register_user(
+        db=db,
+        email=request.email,
+        password=request.password,
+        display_name=request.display_name,
+        phone=request.phone,
+    )
+
+    # Merge anonymous visitor memory if visitor_id provided
+    if request.visitor_id:
+        merge_visitor_memory_to_user(db, request.visitor_id, user.id)
+
+    token = create_token(user.id, user.email)
+    return AuthResponse(
+        token=token,
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+    )
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+def login(request: LoginRequest, db: DBSessionType = Depends(get_db)):
+    """Login with email and password."""
+    user = login_user(db, request.email, request.password)
+
+    # Merge anonymous visitor memory if visitor_id provided
+    if request.visitor_id:
+        merge_visitor_memory_to_user(db, request.visitor_id, user.id)
+
+    token = create_token(user.id, user.email)
+    return AuthResponse(
+        token=token,
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+    )
+
+
+@app.get("/api/auth/me")
+def get_current_user(user: DBUser = Depends(get_required_user)):
+    """Get current authenticated user info."""
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "phone": user.phone,
+    }
+
+
+@app.post("/api/auth/identify", response_model=IdentifyResponse)
+def identify_by_name_phone(request: IdentifyRequest, db: DBSessionType = Depends(get_db)):
+    """
+    Identify a non-authenticated user by name + phone.
+    If a matching user is found, link the visitor to that user's memory.
+    If no match, create a lightweight user record for future matching.
+    """
+    existing_user = find_user_by_name_and_phone(db, request.full_name, request.phone)
+
+    if existing_user:
+        # Found a match — merge visitor memory
+        if request.visitor_id:
+            merge_visitor_memory_to_user(db, request.visitor_id, existing_user.id)
+
+        # Check if they have memory
+        from .database import DBMemoryFact
+        user_facts = db.query(DBMemoryFact).filter(
+            DBMemoryFact.user_id == existing_user.id,
+            DBMemoryFact.is_active == 1,
+        ).count()
+
+        has_mem = user_facts > 0
+        if not has_mem and request.visitor_id:
+            try:
+                memory = load_visitor_memory(db, request.visitor_id)
+                has_mem = memory.get("has_memory", False)
+            except Exception:
+                pass
+
+        return IdentifyResponse(
+            identified=True,
+            user_id=existing_user.id,
+            display_name=existing_user.display_name,
+            has_memory=has_mem,
+        )
+    else:
+        # No match — create a lightweight user record (no password, can't login)
+        import re
+        normalized_phone = re.sub(r'[\s\-\(\)\+]', '', request.phone.strip())
+
+        new_user = DBUser(
+            id=str(uuid.uuid4()),
+            email=f"anon_{uuid.uuid4().hex[:8]}@placeholder.local",
+            password_hash="",  # empty = can't login with password
+            display_name=request.full_name.strip(),
+            phone=normalized_phone,
+            created_at=time.time(),
+        )
+        db.add(new_user)
+        db.commit()
+
+        # Link visitor memory to this new user
+        if request.visitor_id:
+            merge_visitor_memory_to_user(db, request.visitor_id, new_user.id)
+
+        return IdentifyResponse(
+            identified=False,
+            user_id=new_user.id,
+            display_name=new_user.display_name,
+            has_memory=False,
+        )
 
 
 # --- Sheets Logging Helper ---
@@ -117,15 +252,225 @@ def _serialize_for_sheets(db_session, db, extra_user_msg: dict | None = None) ->
     return session_data, messages_data
 
 
+# --- Memory-Aware Greeting ---
+
+def _generate_memory_greeting(arm: BotArm, memory: dict) -> str | None:
+    """
+    Generate a relationship-aware personalized greeting for a returning visitor.
+    Uses relationship context, emotional peaks, and strategic notes to craft
+    a greeting that feels like picking up a conversation with a friend.
+    Returns None if no memory exists (caller falls back to default greeting).
+    """
+    if not memory.get("has_memory"):
+        return None
+
+    identity = memory.get("identity", {})
+    name = identity.get("name")
+    if not name:
+        return None  # No name → not enough info for a personalized greeting
+
+    summaries = memory.get("session_summaries", [])
+    last_summary = summaries[0] if summaries else None
+    relationship = memory.get("relationship", {})
+    emotional_peaks = memory.get("emotional_peaks", [])
+    strategic_notes = memory.get("strategic_notes", {})
+    unfinished_threads = memory.get("unfinished_threads", [])
+    pain_points = memory.get("pain_points", [])
+    session_count = memory.get("session_count", 1)
+
+    if arm == BotArm.SALLY_NEPQ:
+        # Sally gets a Claude-generated relationship-aware greeting
+        from .bots.base import get_client
+        try:
+            prompt = (
+                "You are Sally, a warm and empathetic sales agent for 100x Academy. "
+                f"A returning visitor named {name} is back for chat #{session_count + 1}.\n\n"
+            )
+
+            # Identity context
+            if identity.get("role"):
+                prompt += f"They work as {identity['role']}"
+                if identity.get("company"):
+                    prompt += f" at {identity['company']}"
+                prompt += ".\n"
+
+            # Relationship context
+            if relationship:
+                rapport = relationship.get("rapport_level", "")
+                lang_style = relationship.get("their_language_style", "")
+                energy = relationship.get("energy_pattern", "")
+                personal = [v for k, v in relationship.items() if k.startswith("personal_details_")]
+                humor = [v for k, v in relationship.items() if k.startswith("humor_moments_")]
+                trust = [v for k, v in relationship.items() if k.startswith("trust_signals_")]
+
+                if rapport:
+                    prompt += f"Rapport level: {rapport}\n"
+                if lang_style:
+                    prompt += f"Their communication style: {lang_style}\n"
+                if energy:
+                    prompt += f"Energy pattern: {energy}\n"
+                if personal:
+                    prompt += f"Personal details you know: {'; '.join(personal[:3])}\n"
+                if humor:
+                    prompt += f"Humor moments from past chats: {'; '.join(humor[:2])}\n"
+                if trust:
+                    prompt += f"Trust signals: {'; '.join(trust[:2])}\n"
+
+            # Emotional peaks
+            if emotional_peaks:
+                prompt += "\nEmotional peaks from past sessions:\n"
+                for peak in emotional_peaks[:3]:
+                    if isinstance(peak, dict):
+                        prompt += f"- {peak.get('moment', 'N/A')}: {peak.get('emotion', '')} — they said: \"{peak.get('their_words', '')}\"\n"
+                    else:
+                        prompt += f"- {peak}\n"
+
+            # Strategic intelligence
+            if strategic_notes:
+                next_strategy = strategic_notes.get("next_session_strategy", "")
+                what_worked = strategic_notes.get("what_worked", "")
+                what_didnt = strategic_notes.get("what_didnt_work", "")
+                weak_objection = strategic_notes.get("objection_vulnerability", "")
+                if next_strategy:
+                    prompt += f"\nRecommended approach for this session: {next_strategy}\n"
+                if what_worked:
+                    prompt += f"What worked last time: {what_worked}\n"
+                if what_didnt:
+                    prompt += f"What didn't work: {what_didnt}\n"
+                if weak_objection:
+                    prompt += f"Their weakest objection: {weak_objection}\n"
+
+            if unfinished_threads:
+                prompt += f"\nUnfinished threads to potentially pick up: {'; '.join(unfinished_threads[:3])}\n"
+
+            # Last session context
+            if last_summary:
+                prompt += f"\nLast session summary: {last_summary['summary']}\n"
+                outcome = last_summary.get("outcome", "")
+                if outcome:
+                    prompt += f"Last session outcome: {outcome}\n"
+
+            # Special case handling
+            last_outcome = last_summary.get("outcome", "") if last_summary else ""
+            if "price" in last_outcome.lower() or "objection" in last_outcome.lower():
+                prompt += "\nIMPORTANT: They had a price objection last time. Do NOT mention the workshop or price in your greeting. Focus on reconnecting as a person.\n"
+            elif "completed_free" in last_outcome.lower() or "free_workshop" in last_outcome.lower():
+                prompt += "\nThey completed the free workshop. You can ask how it went.\n"
+            elif last_outcome and any(phase in last_outcome.lower() for phase in ["connection", "situation", "abandoned"]):
+                prompt += "\nThey left early last time. Keep the greeting light and casual — no pressure.\n"
+
+            prompt += (
+                "\nWrite a SHORT (2-3 sentences max) greeting that:\n"
+                "- Reconnects as a PERSON first, not a sales agent\n"
+                "- References ONE specific thing from your history (a personal detail, something they were excited about, or an unfinished thread)\n"
+                "- Matches their energy and rapport level from before\n"
+                "- Does NOT recite facts or list what you remember\n"
+                "- Does NOT say 'I remember' or 'last time you said'\n"
+                "- Feels like a friend picking up a conversation, not a CRM lookup\n"
+                "- Uses their name naturally\n"
+            )
+
+            response = get_client().messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip().strip('"')
+        except Exception as e:
+            logger.error(f"Memory greeting generation failed: {e}")
+            return f"Hey {name}! Good to see you back. How have things been going?"
+
+    elif arm == BotArm.HANK_HYPES:
+        # Enhanced Hank templates with pain point awareness
+        if pain_points:
+            return f"Hey {name}! Great to see you back! Still battling {pain_points[0]}? Let's fix that TODAY."
+        last_outcome = last_summary.get("outcome", "") if last_summary else ""
+        if "price" in last_outcome.lower():
+            return f"Hey {name}! Glad you came back. Let me show you why this is the BEST investment you'll make this year."
+        return f"Hey {name}! Great to see you back! Ready to make some moves with AI?"
+
+    elif arm == BotArm.IVY_INFORMS:
+        # Enhanced Ivy templates with context awareness
+        last_outcome = last_summary.get("outcome", "") if last_summary else ""
+        if "completed" in last_outcome.lower():
+            return f"Hi {name}, welcome back. Last time we covered quite a bit. What else can I help you with?"
+        if pain_points:
+            return f"Hi {name}, welcome back. I'm here if you'd like to explore how we can help with {pain_points[0]}."
+        return f"Hi {name}, welcome back. I'm here if you have more questions about the program."
+
+    return None
+
+
+def _seed_profile_from_memory(memory: dict) -> str:
+    """
+    Pre-populate a prospect profile JSON from stored memory facts.
+    Returns a JSON string suitable for db_session.prospect_profile.
+    """
+    if not memory.get("has_memory"):
+        return "{}"
+
+    profile = {}
+    identity = memory.get("identity", {})
+    if identity.get("name"):
+        profile["name"] = identity["name"]
+    if identity.get("role"):
+        profile["role"] = identity["role"]
+    if identity.get("company"):
+        profile["company"] = identity["company"]
+    if identity.get("industry"):
+        profile["industry"] = identity["industry"]
+
+    situation = memory.get("situation", {})
+    if situation.get("team_size"):
+        profile["team_size"] = situation["team_size"]
+    if situation.get("tools_mentioned"):
+        profile["tools_mentioned"] = situation["tools_mentioned"]
+
+    pain_points = memory.get("pain_points", [])
+    if pain_points:
+        profile["pain_points"] = pain_points
+
+    return json.dumps(profile) if profile else "{}"
+
+
 # --- Session Management ---
 
 @app.post("/api/sessions", response_model=CreateSessionResponse)
-def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(get_db)):
+def create_session(
+    request: CreateSessionRequest,
+    db: DBSessionType = Depends(get_db),
+    current_user: Optional[DBUser] = Depends(get_optional_user),
+):
     session_id = str(uuid.uuid4())[:8].upper()
     now = time.time()
 
     arm = request.selected_bot
+    visitor_id = request.visitor_id
     initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+
+    # Determine user_id: authenticated user takes priority
+    user_id = current_user.id if current_user else None
+
+    # If authenticated and has visitor_id, merge any anonymous memory
+    if user_id and visitor_id:
+        try:
+            merge_visitor_memory_to_user(db, visitor_id, user_id)
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Failed to merge visitor memory: {e}")
+            db.rollback()
+
+    # Load memory for returning visitors/users
+    memory = {}
+    initial_profile = "{}"
+    if visitor_id or user_id:
+        try:
+            memory = load_visitor_memory(db, visitor_id or "", user_id=user_id)
+            if memory.get("has_memory"):
+                initial_profile = _seed_profile_from_memory(memory)
+                logger.info(f"[Session {session_id}] Returning visitor/user — loaded memory with {memory.get('total_prior_sessions', 0)} prior session(s)")
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Failed to load visitor memory: {e}")
+            db.rollback()  # Clear failed transaction so subsequent db.commit() works
 
     db_session = DBSession(
         id=session_id,
@@ -133,16 +478,21 @@ def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(ge
         current_phase=initial_phase,
         pre_conviction=request.pre_conviction,
         assigned_arm=arm.value,
+        visitor_id=visitor_id,
+        user_id=user_id,
         start_time=now,
         message_count=1,
         retry_count=0,
         turn_number=0,
-        prospect_profile="{}",
+        prospect_profile=initial_profile,
         thought_logs="[]",
     )
     db.add(db_session)
 
-    greeting_text = bot_get_greeting(arm)
+    # Generate greeting — personalized for returning visitors, default for new
+    greeting_text = _generate_memory_greeting(arm, memory)
+    if not greeting_text:
+        greeting_text = bot_get_greeting(arm)
     greeting_id = str(uuid.uuid4())
     greeting_msg = DBMessage(
         id=greeting_id,
@@ -168,6 +518,74 @@ def create_session(request: CreateSessionRequest, db: DBSessionType = Depends(ge
             timestamp=now,
             phase=initial_phase,
         ),
+        visitor_id=visitor_id,
+    )
+
+
+# --- Session Resumption ---
+
+@app.get("/api/visitors/{visitor_id}/active-session", response_model=ResumeSessionResponse)
+def get_active_session(
+    visitor_id: str,
+    db: DBSessionType = Depends(get_db),
+    current_user: Optional[DBUser] = Depends(get_optional_user),
+):
+    """Check if a visitor/user has a resumable session (active or recently abandoned within 24h)."""
+    import time as _time
+    from sqlalchemy import or_
+    cutoff = _time.time() - 86400  # 24 hours ago
+
+    # Search by visitor_id OR user_id (if authenticated)
+    identity_conditions = [DBSession.visitor_id == visitor_id]
+    if current_user:
+        identity_conditions.append(DBSession.user_id == current_user.id)
+
+    db_session = (
+        db.query(DBSession)
+        .filter(
+            or_(*identity_conditions),
+            DBSession.status.in_(["active", "abandoned"]),
+            DBSession.start_time > cutoff,
+        )
+        .order_by(DBSession.start_time.desc())
+        .first()
+    )
+
+    if not db_session:
+        raise HTTPException(status_code=404, detail="No resumable session found")
+
+    # Reactivate if it was abandoned
+    if db_session.status == "abandoned":
+        db_session.status = "active"
+        db_session.end_time = None
+        db.commit()
+
+    # Load all messages
+    messages = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == db_session.id)
+        .order_by(DBMessage.timestamp)
+        .all()
+    )
+
+    arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
+
+    return ResumeSessionResponse(
+        session_id=db_session.id,
+        current_phase=db_session.current_phase,
+        assigned_arm=arm.value,
+        bot_display_name=BOT_DISPLAY_NAMES[arm],
+        messages=[
+            MessageResponse(
+                id=m.id,
+                role=m.role,
+                content=m.content,
+                timestamp=m.timestamp,
+                phase=m.phase,
+            )
+            for m in messages
+        ],
+        visitor_id=visitor_id,
     )
 
 
@@ -189,6 +607,21 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     current_phase_str = db_session.current_phase
     current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
     previous_phase = current_phase
+
+    # Load visitor memory BEFORE any db.add() — if this fails and we rollback,
+    # no pending writes are lost
+    memory_block = ""
+    if db_session.visitor_id or getattr(db_session, 'user_id', None):
+        try:
+            visitor_memory = load_visitor_memory(
+                db, db_session.visitor_id or "", user_id=getattr(db_session, 'user_id', None)
+            )
+            memory_block = format_memory_for_prompt(visitor_memory)
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Failed to load visitor memory: {e}")
+            db.rollback()  # Clear failed transaction so subsequent db operations work
+            # Re-fetch db_session since rollback expires all loaded objects
+            db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
 
     # Save user message
     user_msg_id = str(uuid.uuid4())
@@ -225,6 +658,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             arm=arm,
             user_message=request.content,
             conversation_history=conversation_history,
+            memory_context=memory_block,
             # Sally-specific params (ignored for Hank/Ivy):
             current_phase=current_phase or NepqPhase.CONNECTION,
             profile_json=db_session.prospect_profile or "{}",
@@ -330,8 +764,8 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                                     f"arc={quality_result.emotional_arc_score}, "
                                     f"overall={quality_result.overall_score}")
                         # Store result in DB
-                        from .database import SessionLocal
-                        scoring_db = SessionLocal()
+                        from app.database import _get_session_local
+                        scoring_db = _get_session_local()()
                         try:
                             s = scoring_db.query(DBSession).filter(DBSession.id == scoring_session_id).first()
                             if s:
@@ -352,6 +786,49 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                 t.start()
             except Exception as e:
                 logger.error(f"[Session {session_id}] Quality scoring thread launch failed: {e}")
+
+        # Async memory extraction — runs after session ends (fire-and-forget)
+        if db_session.visitor_id or getattr(db_session, 'user_id', None):
+            try:
+                mem_session_id = session_id
+                mem_visitor_id = db_session.visitor_id or ""
+                mem_user_id = getattr(db_session, 'user_id', None)
+                mem_profile_json = db_session.prospect_profile or "{}"
+                mem_outcome = "completed" if db_session.status == "completed" else "abandoned"
+                mem_final_phase = new_phase_str
+                mem_transcript = [
+                    {"role": m.role, "content": m.content, "phase": m.phase}
+                    for m in messages
+                ]
+                mem_transcript.append({"role": "user", "content": request.content, "phase": current_phase.value if current_phase else current_phase_str})
+                mem_transcript.append({"role": "assistant", "content": result["response_text"], "phase": new_phase_str})
+
+                def _run_memory_extraction():
+                    try:
+                        extraction = extract_memory_from_session(
+                            session_id=mem_session_id,
+                            visitor_id=mem_visitor_id,
+                            transcript=mem_transcript,
+                            profile_json=mem_profile_json,
+                            outcome=mem_outcome,
+                            final_phase=mem_final_phase,
+                        )
+                        if extraction:
+                            from app.database import _get_session_local
+                            store_memory(
+                                db_session_maker=_get_session_local(),
+                                session_id=mem_session_id,
+                                visitor_id=mem_visitor_id,
+                                extraction=extraction,
+                                user_id=mem_user_id,
+                            )
+                    except Exception as e:
+                        logger.error(f"[Session {mem_session_id}] Memory extraction failed: {e}")
+
+                t_mem = threading.Thread(target=_run_memory_extraction, daemon=True)
+                t_mem.start()
+            except Exception as e:
+                logger.error(f"[Session {session_id}] Memory extraction thread launch failed: {e}")
 
     # Gmail escalation: trigger when entering OWNERSHIP (first time only) — Sally only
     if is_sally and new_phase == NepqPhase.OWNERSHIP and previous_phase != NepqPhase.OWNERSHIP and not db_session.escalation_sent:
@@ -620,6 +1097,49 @@ def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
         except Exception as e:
             logger.error(f"[Session {session_id}] Sheets log (abandoned) error: {e}")
 
+        # Async memory extraction on abandon
+        if db_session.visitor_id or getattr(db_session, 'user_id', None):
+            try:
+                mem_sid = session_id
+                mem_vid = db_session.visitor_id or ""
+                mem_uid = getattr(db_session, 'user_id', None)
+                mem_profile = db_session.prospect_profile or "{}"
+                mem_phase = db_session.current_phase
+                all_msgs_mem = (
+                    db.query(DBMessage)
+                    .filter(DBMessage.session_id == session_id)
+                    .order_by(DBMessage.timestamp)
+                    .all()
+                )
+                mem_transcript = [{"role": m.role, "content": m.content, "phase": m.phase} for m in all_msgs_mem]
+
+                def _run_abandon_memory():
+                    try:
+                        extraction = extract_memory_from_session(
+                            session_id=mem_sid,
+                            visitor_id=mem_vid,
+                            transcript=mem_transcript,
+                            profile_json=mem_profile,
+                            outcome="abandoned",
+                            final_phase=mem_phase,
+                        )
+                        if extraction:
+                            from app.database import _get_session_local
+                            store_memory(
+                                db_session_maker=_get_session_local(),
+                                session_id=mem_sid,
+                                visitor_id=mem_vid,
+                                extraction=extraction,
+                                user_id=mem_uid,
+                            )
+                    except Exception as e:
+                        logger.error(f"[Session {mem_sid}] Abandon memory extraction failed: {e}")
+
+                t = threading.Thread(target=_run_abandon_memory, daemon=True)
+                t.start()
+            except Exception as e:
+                logger.error(f"[Session {session_id}] Abandon memory thread failed: {e}")
+
     return {"status": "ok"}
 
 
@@ -649,6 +1169,34 @@ def get_thought_logs(session_id: str, db: DBSessionType = Depends(get_db)):
         "retry_count": db_session.retry_count,
         "prospect_profile": profile,
         "thought_logs": thought_logs,
+    }
+
+
+# --- Visitor Memory ---
+
+@app.get("/api/visitors/{visitor_id}/memory")
+def get_visitor_memory(visitor_id: str, db: DBSessionType = Depends(get_db)):
+    """Debug endpoint: view stored memory for a visitor."""
+    memory = load_visitor_memory(db, visitor_id)
+    return memory
+
+
+@app.delete("/api/visitors/{visitor_id}/memory")
+def delete_visitor_memory(visitor_id: str, db: DBSessionType = Depends(get_db)):
+    """Delete all stored memory for a visitor (privacy / 'Forget Me')."""
+    from .database import DBMemoryFact, DBSessionSummary
+
+    facts_deleted = db.query(DBMemoryFact).filter(DBMemoryFact.visitor_id == visitor_id).delete()
+    summaries_deleted = db.query(DBSessionSummary).filter(DBSessionSummary.visitor_id == visitor_id).delete()
+    db.commit()
+
+    logger.info(f"[Privacy] Deleted memory for visitor {visitor_id[:8]}: {facts_deleted} facts, {summaries_deleted} summaries")
+
+    return {
+        "status": "ok",
+        "visitor_id": visitor_id,
+        "facts_deleted": facts_deleted,
+        "summaries_deleted": summaries_deleted,
     }
 
 
