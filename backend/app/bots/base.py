@@ -1,19 +1,23 @@
 """
 Base class for control bots (Hank, Ivy).
-Uses the same lazy Anthropic client pattern as response.py.
 
-Control bots are intentionally simpler than Sally's three-layer engine:
-single-prompt Claude calls with no structured phase gates.
+Enhanced from the original single-prompt approach to include:
+- Turn tracking for conversation pacing
+- Memory context injection for returning visitors
+- Basic profile extraction so bots can personalize
+- Conversation history management (cap at 20 messages for context window efficiency)
+- Link injection (same pattern as Sally)
 """
 from __future__ import annotations
 
 import os
+import re
+import json
 import logging
 from anthropic import Anthropic
 
 logger = logging.getLogger("sally.bots")
 
-# Reuse the same lazy client pattern from response.py
 _client: Anthropic | None = None
 
 
@@ -28,7 +32,7 @@ def get_client() -> Anthropic:
 
 
 class ControlBot:
-    """Base class for Hank and Ivy. Single-prompt, no phase gates."""
+    """Enhanced base class for Hank and Ivy."""
 
     name: str = "base"
     display_name: str = "Bot"
@@ -36,6 +40,55 @@ class ControlBot:
 
     def get_greeting(self) -> str:
         raise NotImplementedError
+
+    def _build_turn_context(self, conversation_history: list[dict]) -> str:
+        """Build turn-awareness context for the system prompt."""
+        turn_count = sum(1 for m in conversation_history if m.get("role") == "user")
+        total_messages = len(conversation_history)
+
+        # Extract basic profile from conversation
+        profile_hints = self._extract_profile_hints(conversation_history)
+
+        context = f"\nCONVERSATION STATE:"
+        context += f"\n- This is turn {turn_count} of the conversation ({total_messages} total messages)."
+
+        if profile_hints:
+            context += f"\n- What you know about them so far: {json.dumps(profile_hints)}"
+
+        # Pacing guidance
+        if turn_count <= 2:
+            context += "\n- PACING: Early conversation. Focus on understanding who they are and what they need."
+        elif turn_count <= 6:
+            context += "\n- PACING: Mid conversation. You should have enough context to be specific and personalized."
+        elif turn_count <= 12:
+            context += "\n- PACING: Late conversation. If you haven't discussed the workshop/price yet, it's time."
+        else:
+            context += "\n- PACING: Extended conversation. Wrap up. Either close or offer the free alternative."
+
+        return context
+
+    def _extract_profile_hints(self, conversation_history: list[dict]) -> dict:
+        """Extract basic profile info from conversation history for personalization."""
+        hints = {}
+        user_messages = [m["content"] for m in conversation_history if m.get("role") == "user"]
+        full_text = " ".join(user_messages).lower()
+
+        # Very basic extraction — enough for personalization, not a full NLP pipeline
+        # The LLM does the real work; this just helps with pacing decisions
+        if any(word in full_text for word in ["ceo", "founder", "vp", "director", "manager", "lead", "head of"]):
+            hints["has_role"] = True
+        if any(word in full_text for word in ["company", "startup", "firm", "agency", "team of"]):
+            hints["has_company"] = True
+        if any(word in full_text for word in ["expensive", "afford", "budget", "cost", "price", "too much"]):
+            hints["price_concern"] = True
+        if any(word in full_text for word in ["not sure", "maybe later", "think about", "need time"]):
+            hints["hesitant"] = True
+        if any(word in full_text for word in ["interested", "sounds good", "tell me more", "how do i"]):
+            hints["interested"] = True
+        if any(word in full_text for word in ["@", "email", "my email"]):
+            hints["shared_email"] = True
+
+        return hints
 
     def respond(
         self,
@@ -45,10 +98,21 @@ class ControlBot:
     ) -> dict:
         """
         Generate a response using a single Claude API call.
-
-        Returns dict matching SallyEngine.process_turn() output shape
-        so main.py can handle all bots uniformly.
+        Enhanced with turn tracking, memory context, and conversation capping.
         """
+        # Cap conversation history for context window efficiency
+        if len(conversation_history) > 20:
+            conversation_history = conversation_history[-20:]
+
+        # Build enhanced system prompt
+        turn_context = self._build_turn_context(conversation_history)
+        system = self.system_prompt + turn_context
+
+        # Inject memory context for returning visitors
+        if memory_context:
+            system += f"\n\n{memory_context}"
+            system += "\nUSE THIS MEMORY NATURALLY. Reference prior conversations when relevant. Never say 'I remember' or 'from last time' — just know it and use it."
+
         # Build messages array for Claude
         # NOTE: conversation_history already includes the current user_message
         # (appended in main.py before calling route_message), so we do NOT
@@ -58,10 +122,6 @@ class ControlBot:
         for msg in conversation_history:
             role = "user" if msg["role"] == "user" else "assistant"
             messages.append({"role": role, "content": msg["content"]})
-
-        system = self.system_prompt
-        if memory_context:
-            system = f"{self.system_prompt}\n\n{memory_context}"
 
         try:
             response = get_client().messages.create(
@@ -79,12 +139,15 @@ class ControlBot:
         if response_text.startswith('"') and response_text.endswith('"'):
             response_text = response_text[1:-1]
 
-        # Detect session end (simple heuristic for control bots)
+        # Link injection — same pattern as Sally's main.py
+        response_text = self._inject_links(response_text)
+
+        # Detect session end
         session_ended = self._should_end(user_message, response_text, len(conversation_history))
 
         return {
             "response_text": response_text,
-            "new_phase": "CONVERSATION",  # Control bots don't have NEPQ phases
+            "new_phase": "CONVERSATION",
             "new_profile_json": "{}",
             "thought_log_json": "{}",
             "phase_changed": False,
@@ -96,6 +159,23 @@ class ControlBot:
             "objection_diffusion_step": 0,
             "ownership_substep": 0,
         }
+
+    def _inject_links(self, response_text: str) -> str:
+        """Handle link placeholders and fix hallucinated URLs."""
+        text_lower = response_text.lower()
+
+        # Strip hallucinated Calendly URLs
+        if "calendly.com" in text_lower:
+            response_text = re.sub(r'https?://calendly\.com/\S+', '', response_text)
+            response_text = re.sub(r'\s+', ' ', response_text).strip()
+
+        # Fix TidyCal URLs
+        tidycal_path = os.getenv("TIDYCAL_PATH", "")
+        if tidycal_path and "tidycal.com" in text_lower:
+            tidycal_url = f"https://tidycal.com/{tidycal_path}"
+            response_text = re.sub(r'https?://tidycal\.com/\S+', tidycal_url, response_text)
+
+        return response_text
 
     def _should_end(self, user_message: str, bot_response: str, history_length: int) -> bool:
         """

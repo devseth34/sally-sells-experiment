@@ -108,6 +108,7 @@ def extract_memory_from_session(
     profile_json: str,
     outcome: str,
     final_phase: str,
+    bot_arm: str = "unknown",
 ) -> dict:
     """
     Run Gemini to extract structured memory from a completed session.
@@ -115,10 +116,13 @@ def extract_memory_from_session(
     """
     _ensure_gemini()
 
-    # Build transcript text
+    # Build transcript text with bot-specific role label
+    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy"}
+    bot_display = bot_names.get(bot_arm, "Agent")
+
     transcript_text = ""
     for msg in transcript:
-        role = "Sally" if msg.get("role") == "assistant" else "Prospect"
+        role = bot_display if msg.get("role") == "assistant" else "Prospect"
         transcript_text += f"{role}: {msg.get('content', '')}\n"
 
     prompt = EXTRACTION_PROMPT.format(
@@ -127,6 +131,8 @@ def extract_memory_from_session(
         outcome=outcome,
         final_phase=final_phase,
     )
+    # Add bot context so extraction knows which bot had the conversation
+    prompt = f"BOT THAT HAD THIS CONVERSATION: {bot_arm}\n\n" + prompt
 
     try:
         model = genai.GenerativeModel("gemini-2.0-flash")
@@ -149,7 +155,7 @@ def extract_memory_from_session(
         return {}
 
 
-def store_memory(db_session_maker, session_id: str, visitor_id: str, extraction: dict, user_id: str = None):
+def store_memory(db_session_maker, session_id: str, visitor_id: str, extraction: dict, user_id: str = None, bot_arm: str = "unknown"):
     """
     Store extracted memory facts and session summary in the database.
     Handles conflict resolution: newer facts supersede older ones.
@@ -407,6 +413,7 @@ def load_visitor_memory(db, visitor_id: str, user_id: str = None) -> dict:
         "unfinished_threads": unfinished_threads,
         "session_summaries": summary_list,
         "total_prior_sessions": len(summaries),
+        "session_count": len(summaries),  # alias for total_prior_sessions (used by greeting generator)
     }
 
 
@@ -524,7 +531,87 @@ def format_memory_for_prompt(memory: dict) -> str:
         for i, s in enumerate(summaries[:3]):
             lines.append(f"  Session {i+1} ({s['outcome']}, reached {s['phase']}): {s['summary']}")
 
+        # Cross-bot context
+        lines.append("")
+        lines.append("NOTE: This person may have spoken to different team members previously (Sally, Hank, or Ivy). Each has a different style. Use what you learned from ANY of their conversations, regardless of who they spoke with.")
+
     lines.append("")
     lines.append("REMEMBER: You KNOW this person. Use this knowledge like a friend would — naturally, never robotically. Never say 'I remember' or 'you previously mentioned'. Just know it.")
+
+    return "\n".join(lines)
+
+
+def load_recent_conversation_context(db, visitor_id: str, user_id: str = None) -> str:
+    """
+    Load the actual messages from the most recent completed/abandoned session.
+    Returns a formatted string of the last conversation, or empty string if no prior session.
+    Limited to 20 most recent messages to stay within token budget.
+    """
+    from sqlalchemy import or_
+
+    # Build filter for visitor_id OR user_id
+    conditions = []
+    if visitor_id:
+        conditions.append(DBSession.visitor_id == visitor_id)
+    if user_id:
+        conditions.append(DBSession.user_id == user_id)
+
+    if not conditions:
+        return ""
+
+    # Find the most recent non-active session
+    recent_session = (
+        db.query(DBSession)
+        .filter(
+            or_(*conditions),
+            DBSession.status.in_(["completed", "abandoned"]),
+        )
+        .order_by(DBSession.end_time.desc())
+        .first()
+    )
+
+    # Fallback: if no ended session, check for active sessions that have messages
+    # (user may have closed tab without session being properly ended)
+    if not recent_session:
+        recent_session = (
+            db.query(DBSession)
+            .filter(
+                or_(*conditions),
+                DBSession.status == "active",
+            )
+            .order_by(DBSession.start_time.desc())
+            .first()
+        )
+
+    if not recent_session:
+        return ""
+
+    # Load messages from that session (last 20)
+    messages = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == recent_session.id)
+        .order_by(DBMessage.timestamp)
+        .all()
+    )
+
+    if not messages:
+        return ""
+
+    # Take the last 20 messages
+    recent_messages = messages[-20:]
+
+    # Format as conversation
+    lines = []
+    outcome = recent_session.status  # "completed" or "abandoned"
+    phase = recent_session.current_phase or "unknown"
+    lines.append(f"LAST CONVERSATION (ended: {outcome}, reached: {phase}):")
+
+    # Use bot-specific role label based on which bot had the session
+    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy"}
+    bot_display = bot_names.get(recent_session.assigned_arm, "Agent") if recent_session.assigned_arm else "Sally"
+
+    for msg in recent_messages:
+        role = bot_display if msg.role == "assistant" else "Prospect"
+        lines.append(f"{role}: {msg.content}")
 
     return "\n".join(lines)

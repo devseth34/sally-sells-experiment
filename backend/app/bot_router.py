@@ -59,7 +59,7 @@ def route_message(
     Returns a dict with the same shape regardless of bot, so main.py
     can handle all three uniformly.
     """
-    logger.info(f"[Router] Routing to {arm.value}")
+    logger.info(f"[Router] Routing to {arm.value} (memory={'yes' if memory_context else 'no'})")
 
     if arm == BotArm.SALLY_NEPQ:
         # Sally uses the full three-layer engine — pass everything through

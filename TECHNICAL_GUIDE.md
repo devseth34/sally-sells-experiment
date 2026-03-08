@@ -220,6 +220,8 @@ google-auth
 google-generativeai
 requests
 eval-type-backport
+bcrypt
+python-jose[cryptography]
 ```
 
 **Frontend** (`frontend/package.json`):
@@ -1048,6 +1050,7 @@ All environment variables are loaded once in `database.py` via `load_dotenv(over
 | `DATABASE_URL` | Yes | PostgreSQL connection string (Neon format) |
 | `ANTHROPIC_API_KEY` | Yes | Claude API key for Layer 3 + Quality Scorer |
 | `GEMINI_API_KEY` | Yes | Google Generative AI key for Layer 1 |
+| `JWT_SECRET_KEY` | Yes | Secret key used to sign JWTs for user authentication |
 | `STRIPE_SECRET_KEY` | Yes | Stripe secret key for checkout sessions |
 | `STRIPE_PUBLISHABLE_KEY` | Yes | Stripe publishable key (exposed to frontend via `/api/config`) |
 | `STRIPE_PAYMENT_LINK` | No | Fallback pre-configured payment link URL |
@@ -1093,9 +1096,28 @@ restartPolicyMaxRetries = 3
 **Backend:**
 ```bash
 cd backend
-pip install -r requirements.txt
-# Create .env with at minimum: DATABASE_URL, ANTHROPIC_API_KEY, GEMINI_API_KEY, STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY
-uvicorn app.main:app --reload --port 8000
+ # 1) Activate your project's virtualenv from the project root
+ source venv/bin/activate
+
+ # 2) Install Python dependencies
+ pip install -r requirements.txt
+
+ # NOTE: If you previously installed the PyPI package named `jose` (old/outdated),
+ # uninstall it and install the supported package `python-jose` instead:
+ #
+ #   pip uninstall -y jose
+ #   pip install python-jose[cryptography]
+
+ # 3) Create a `.env` file in the project root (see Environment Variables section).
+ #    Make sure at minimum these backend variables are present:
+ #    DATABASE_URL, ANTHROPIC_API_KEY, GEMINI_API_KEY, STRIPE_SECRET_KEY,
+ #    STRIPE_PUBLISHABLE_KEY, JWT_SECRET_KEY
+
+ # 4) Run the backend (development):
+ uvicorn app.main:app --reload --port 8000
+
+ # Or use the bundled start script (used by some hosts):
+ # ./start.sh    # calls: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 ```
 
 **Frontend:**

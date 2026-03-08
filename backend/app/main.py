@@ -58,7 +58,7 @@ from .agent import SallyEngine
 from .bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
 from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
-from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt
+from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt, load_recent_conversation_context
 import threading
 
 logging.basicConfig(level=logging.INFO)
@@ -254,20 +254,131 @@ def _serialize_for_sheets(db_session, db, extra_user_msg: dict | None = None) ->
 
 # --- Memory-Aware Greeting ---
 
-def _generate_memory_greeting(arm: BotArm, memory: dict) -> str | None:
+def _extract_name_from_context(recent_context: str) -> str | None:
+    """
+    Try to extract the visitor's name from raw conversation context.
+    Looks for common patterns like "I'm [Name]", "my name is [Name]",
+    or the assistant addressing them by name.
+    """
+    import re
+
+    # Pattern 1: Prospect self-introduction
+    # "I'm Dev", "I am Sarah", "my name is Alex", "this is John", "it's Mike"
+    # Also handles: "hey sally im John" (words between greeting and intro)
+    match = re.search(
+        r"Prospect:\s*.*?(?:I'm|I am|my name is|this is|it's|im)\s+([A-Z][a-zA-Z]+)",
+        recent_context,
+        re.IGNORECASE,
+    )
+    if match:
+        candidate = match.group(1)
+        # Filter out common words that aren't names
+        non_names = {
+            "there", "everyone", "all", "again", "back", "sure", "great",
+            "well", "so", "what", "how", "interested", "looking", "here",
+            "just", "really", "very", "actually", "also", "curious",
+        }
+        if candidate.lower() not in non_names:
+            return candidate
+
+    # Pattern 2: Sally addresses them by name
+    # "Nice to meet you, Dev!" or "Hey Dev," or "Thanks Dev"
+    match = re.search(
+        r"Sally:.*?(?:nice to meet you|hey|hi|hello|thanks|welcome back|good to see you)[,!]?\s+([A-Z][a-zA-Z]+)[!,.\s]",
+        recent_context,
+        re.IGNORECASE,
+    )
+    if match:
+        candidate = match.group(1)
+        non_names = {
+            "there", "everyone", "all", "again", "back", "sure", "great",
+            "well", "so", "what", "how", "too", "and", "the", "that",
+        }
+        if candidate.lower() not in non_names:
+            return candidate
+
+    return None
+
+
+def _generate_greeting_from_context(arm: BotArm, recent_context: str) -> str | None:
+    """
+    Generate a personalized greeting using raw conversation context when
+    structured memory (memory_facts) is not yet available.
+
+    This handles the race condition where memory extraction daemon hasn't
+    completed, but we still have the full conversation transcript from
+    DBMessage records (populated synchronously during conversation).
+    """
+    if arm == BotArm.SALLY_NEPQ:
+        from .bots.base import get_client
+        try:
+            prompt = (
+                "You are Sally, a warm and empathetic sales agent for 100x Academy. "
+                "A visitor you've talked to before is starting a new chat. "
+                "Below is their last conversation with you.\n\n"
+                f"{recent_context}\n\n"
+                "Based on this conversation, write a SHORT (2-3 sentences max) greeting that:\n"
+                "- Uses their name if you can find it in the conversation\n"
+                "- References ONE specific thing from the conversation (a pain point, something they were excited about, their situation)\n"
+                "- Feels like a friend picking up a conversation, not a CRM lookup\n"
+                "- Does NOT say 'I remember' or 'last time you said'\n"
+                "- Does NOT re-introduce yourself — they already know you\n"
+                "- If you cannot find their name, still write a warm personalized greeting based on what was discussed\n"
+            )
+            response = get_client().messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            greeting = response.content[0].text.strip().strip('"')
+            if greeting:
+                logger.info(f"[Greeting] Generated from recent_context: {greeting[:80]}...")
+                return greeting
+        except Exception as e:
+            logger.error(f"[Greeting] Failed to generate from context: {e}")
+            # Try to extract name for a template fallback
+            name = _extract_name_from_context(recent_context)
+            if name:
+                return f"Hey {name}! Good to see you back. How have things been going?"
+            return None
+
+    elif arm in (BotArm.HANK_HYPES, BotArm.IVY_INFORMS):
+        # For control bots, try to extract name from context for template greeting
+        name = _extract_name_from_context(recent_context)
+        if not name:
+            return None
+        if arm == BotArm.HANK_HYPES:
+            return f"Hey {name}! Great to see you back! Ready to make some moves with AI?"
+        else:
+            return f"Hi {name}, welcome back. I'm here if you have more questions about the program."
+
+    return None
+
+
+def _generate_memory_greeting(arm: BotArm, memory: dict, recent_context: str = "") -> str | None:
     """
     Generate a relationship-aware personalized greeting for a returning visitor.
-    Uses relationship context, emotional peaks, and strategic notes to craft
-    a greeting that feels like picking up a conversation with a friend.
+    Uses relationship context, emotional peaks, strategic notes, and recent
+    conversation context to craft a greeting that feels like picking up a conversation.
     Returns None if no memory exists (caller falls back to default greeting).
     """
     if not memory.get("has_memory"):
+        # No structured memory (memory_facts). But if we have recent conversation
+        # context (raw messages from a prior session), generate a greeting from that.
+        # This handles the race condition where async Gemini extraction hasn't finished.
+        if recent_context:
+            logger.info(f"[Greeting] No structured memory, but have recent_context ({len(recent_context)} chars) — generating from conversation history")
+            return _generate_greeting_from_context(arm, recent_context)
+        logger.debug(f"[Greeting] No memory and no recent_context — returning None")
         return None
 
     identity = memory.get("identity", {})
     name = identity.get("name")
     if not name:
+        logger.debug(f"[Greeting] No name in identity — returning None (identity={identity})")
         return None  # No name → not enough info for a personalized greeting
+
+    logger.info(f"[Greeting] Generating personalized greeting for {name} (arm={arm}, sessions={memory.get('session_count', '?')})")
 
     summaries = memory.get("session_summaries", [])
     last_summary = summaries[0] if summaries else None
@@ -359,6 +470,10 @@ def _generate_memory_greeting(arm: BotArm, memory: dict) -> str | None:
             elif last_outcome and any(phase in last_outcome.lower() for phase in ["connection", "situation", "abandoned"]):
                 prompt += "\nThey left early last time. Keep the greeting light and casual — no pressure.\n"
 
+            # Recent conversation context — what was actually said last time
+            if recent_context:
+                prompt += f"\n{recent_context}\n"
+
             prompt += (
                 "\nWrite a SHORT (2-3 sentences max) greeting that:\n"
                 "- Reconnects as a PERSON first, not a sales agent\n"
@@ -382,21 +497,32 @@ def _generate_memory_greeting(arm: BotArm, memory: dict) -> str | None:
 
     elif arm == BotArm.HANK_HYPES:
         # Enhanced Hank templates with pain point awareness
-        if pain_points:
-            return f"Hey {name}! Great to see you back! Still battling {pain_points[0]}? Let's fix that TODAY."
+        if name and pain_points:
+            return (
+                f"Hey {name}! Great to see you again! "
+                f"Last time you mentioned {pain_points[0][:60]} — "
+                f"I've been thinking about the numbers on that. Ready to dig in?"
+            )
         last_outcome = last_summary.get("outcome", "") if last_summary else ""
-        if "price" in last_outcome.lower():
+        if name and "price" in last_outcome.lower():
             return f"Hey {name}! Glad you came back. Let me show you why this is the BEST investment you'll make this year."
-        return f"Hey {name}! Great to see you back! Ready to make some moves with AI?"
+        elif name:
+            return f"Hey {name}! Awesome to have you back! What's been happening on the AI front since we last chatted?"
+        return bot_get_greeting(arm)
 
     elif arm == BotArm.IVY_INFORMS:
         # Enhanced Ivy templates with context awareness
         last_outcome = last_summary.get("outcome", "") if last_summary else ""
-        if "completed" in last_outcome.lower():
-            return f"Hi {name}, welcome back. Last time we covered quite a bit. What else can I help you with?"
-        if pain_points:
-            return f"Hi {name}, welcome back. I'm here if you'd like to explore how we can help with {pain_points[0]}."
-        return f"Hi {name}, welcome back. I'm here if you have more questions about the program."
+        if name and last_outcome:
+            if "free" in last_outcome.lower():
+                return f"Hi {name}. Welcome back. Last time you opted for the free workshop. I can provide more information about it or answer any new questions."
+            elif last_outcome in ("abandoned_late", "abandoned_mid"):
+                return f"Hi {name}. Good to see you again. I have context from our previous discussion. What information would be helpful today?"
+            else:
+                return f"Hi {name}. Welcome back. What would you like to know more about?"
+        elif name:
+            return f"Hi {name}. Welcome back. What information can I help with?"
+        return bot_get_greeting(arm)
 
     return None
 
@@ -405,30 +531,38 @@ def _seed_profile_from_memory(memory: dict) -> str:
     """
     Pre-populate a prospect profile JSON from stored memory facts.
     Returns a JSON string suitable for db_session.prospect_profile.
+    Seeds ALL ProspectProfile fields that have data in memory, so Sally's
+    decision engine doesn't re-discover things already known.
     """
     if not memory.get("has_memory"):
         return "{}"
 
     profile = {}
-    identity = memory.get("identity", {})
-    if identity.get("name"):
-        profile["name"] = identity["name"]
-    if identity.get("role"):
-        profile["role"] = identity["role"]
-    if identity.get("company"):
-        profile["company"] = identity["company"]
-    if identity.get("industry"):
-        profile["industry"] = identity["industry"]
 
+    # Identity
+    identity = memory.get("identity", {})
+    for key in ("name", "role", "company", "industry"):
+        if identity.get(key):
+            profile[key] = identity[key]
+
+    # Situation (all fields)
     situation = memory.get("situation", {})
-    if situation.get("team_size"):
-        profile["team_size"] = situation["team_size"]
+    for key in ("team_size", "workflow_description", "current_state", "desired_state"):
+        if situation.get(key):
+            profile[key] = situation[key]
     if situation.get("tools_mentioned"):
         profile["tools_mentioned"] = situation["tools_mentioned"]
 
+    # Pain points → seed into both pain_points and frustrations
     pain_points = memory.get("pain_points", [])
     if pain_points:
         profile["pain_points"] = pain_points
+        profile["frustrations"] = pain_points  # ProspectProfile also has frustrations field
+
+    # Objection history (useful for decision engine context)
+    objection_history = memory.get("objection_history", [])
+    if objection_history:
+        profile["objection_history"] = objection_history
 
     return json.dumps(profile) if profile else "{}"
 
@@ -462,15 +596,115 @@ def create_session(
     # Load memory for returning visitors/users
     memory = {}
     initial_profile = "{}"
+    recent_context = ""
     if visitor_id or user_id:
         try:
             memory = load_visitor_memory(db, visitor_id or "", user_id=user_id)
             if memory.get("has_memory"):
                 initial_profile = _seed_profile_from_memory(memory)
-                logger.info(f"[Session {session_id}] Returning visitor/user — loaded memory with {memory.get('total_prior_sessions', 0)} prior session(s)")
+                logger.info(f"[Session {session_id}] Returning visitor/user — loaded memory with {memory.get('total_prior_sessions', 0)} prior session(s), identity={memory.get('identity', {})}")
+            else:
+                logger.info(f"[Session {session_id}] No memory facts found for visitor={visitor_id}, user_id={user_id}")
         except Exception as e:
             logger.error(f"[Session {session_id}] Failed to load visitor memory: {e}")
             db.rollback()  # Clear failed transaction so subsequent db.commit() works
+
+        # Load recent conversation context (actual messages from last session)
+        try:
+            recent_context = load_recent_conversation_context(db, visitor_id or "", user_id=user_id)
+            if recent_context:
+                logger.info(f"[Session {session_id}] Loaded recent conversation context ({len(recent_context)} chars)")
+        except Exception as e:
+            logger.error(f"[Session {session_id}] Failed to load recent conversation context: {e}")
+
+        # Fallback: if memory extraction hasn't completed yet (race condition with async daemon),
+        # try to build a minimal memory dict from the last session's prospect_profile.
+        # This ensures returning visitors get personalized greetings even if Gemini extraction is slow.
+        if not memory.get("has_memory") and (visitor_id or user_id):
+            try:
+                from sqlalchemy import or_ as _or
+                _id_conds = []
+                if visitor_id:
+                    _id_conds.append(DBSession.visitor_id == visitor_id)
+                if user_id:
+                    _id_conds.append(DBSession.user_id == user_id)
+                if _id_conds:
+                    # Check completed/abandoned first, then any session with a profile
+                    prev_session = (
+                        db.query(DBSession)
+                        .filter(
+                            _or(*_id_conds),
+                            DBSession.status.in_(["completed", "abandoned"]),
+                        )
+                        .order_by(DBSession.end_time.desc())
+                        .first()
+                    )
+                    # If no ended session, try active ones (user may not have properly ended)
+                    if not prev_session:
+                        prev_session = (
+                            db.query(DBSession)
+                            .filter(
+                                _or(*_id_conds),
+                                DBSession.prospect_profile.isnot(None),
+                                DBSession.prospect_profile != "{}",
+                            )
+                            .order_by(DBSession.start_time.desc())
+                            .first()
+                        )
+                    if prev_session and prev_session.prospect_profile:
+                        try:
+                            profile_data = json.loads(prev_session.prospect_profile)
+                            # Try to get name from profile first, then from conversation context
+                            fallback_name = profile_data.get("name")
+                            if not fallback_name and recent_context:
+                                fallback_name = _extract_name_from_context(recent_context)
+                                if fallback_name:
+                                    logger.info(f"[Session {session_id}] Extracted name '{fallback_name}' from recent_context")
+                            if fallback_name:
+                                memory = {
+                                    "has_memory": True,
+                                    "identity": {
+                                        "name": fallback_name,
+                                        "role": profile_data.get("role"),
+                                        "company": profile_data.get("company"),
+                                        "industry": profile_data.get("industry"),
+                                    },
+                                    "situation": {},
+                                    "pain_points": profile_data.get("pain_points", []),
+                                    "objection_history": [],
+                                    "session_summaries": [],
+                                    "total_prior_sessions": 1,
+                                    "session_count": 1,
+                                    "relationship": {},
+                                    "emotional_peaks": [],
+                                    "strategic_notes": {},
+                                    "unfinished_threads": [],
+                                }
+                                initial_profile = _seed_profile_from_memory(memory)
+                                logger.info(f"[Session {session_id}] Fallback: built memory from last session's prospect_profile (name={fallback_name})")
+                        except (json.JSONDecodeError, Exception) as e:
+                            logger.error(f"[Session {session_id}] Fallback profile parse failed: {e}")
+                    elif recent_context:
+                        # No previous session with profile found, but we have conversation context
+                        extracted_name = _extract_name_from_context(recent_context)
+                        if extracted_name:
+                            memory = {
+                                "has_memory": True,
+                                "identity": {"name": extracted_name},
+                                "situation": {},
+                                "pain_points": [],
+                                "objection_history": [],
+                                "session_summaries": [],
+                                "total_prior_sessions": 1,
+                                "session_count": 1,
+                                "relationship": {},
+                                "emotional_peaks": [],
+                                "strategic_notes": {},
+                                "unfinished_threads": [],
+                            }
+                            logger.info(f"[Session {session_id}] Fallback: built memory from name extracted from recent_context (name={extracted_name})")
+            except Exception as e:
+                logger.error(f"[Session {session_id}] Fallback memory lookup failed: {e}")
 
     db_session = DBSession(
         id=session_id,
@@ -490,7 +724,8 @@ def create_session(
     db.add(db_session)
 
     # Generate greeting — personalized for returning visitors, default for new
-    greeting_text = _generate_memory_greeting(arm, memory)
+    greeting_text = _generate_memory_greeting(arm, memory, recent_context=recent_context)
+    logger.info(f"[Session {session_id}] Greeting generation: has_memory={memory.get('has_memory')}, name={memory.get('identity', {}).get('name')}, result={'personalized' if greeting_text else 'default'}")
     if not greeting_text:
         greeting_text = bot_get_greeting(arm)
     greeting_id = str(uuid.uuid4())
@@ -617,6 +852,17 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                 db, db_session.visitor_id or "", user_id=getattr(db_session, 'user_id', None)
             )
             memory_block = format_memory_for_prompt(visitor_memory)
+
+            # Append recent conversation context (actual messages from prior session)
+            if memory_block:
+                try:
+                    recent_ctx = load_recent_conversation_context(
+                        db, db_session.visitor_id or "", user_id=getattr(db_session, 'user_id', None)
+                    )
+                    if recent_ctx:
+                        memory_block = memory_block + "\n\n" + recent_ctx
+                except Exception as e:
+                    logger.error(f"[Session {session_id}] Failed to load recent conversation context: {e}")
         except Exception as e:
             logger.error(f"[Session {session_id}] Failed to load visitor memory: {e}")
             db.rollback()  # Clear failed transaction so subsequent db operations work
@@ -793,6 +1039,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                 mem_session_id = session_id
                 mem_visitor_id = db_session.visitor_id or ""
                 mem_user_id = getattr(db_session, 'user_id', None)
+                mem_bot_arm = arm.value
                 mem_profile_json = db_session.prospect_profile or "{}"
                 mem_outcome = "completed" if db_session.status == "completed" else "abandoned"
                 mem_final_phase = new_phase_str
@@ -812,6 +1059,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                             profile_json=mem_profile_json,
                             outcome=mem_outcome,
                             final_phase=mem_final_phase,
+                            bot_arm=mem_bot_arm,
                         )
                         if extraction:
                             from app.database import _get_session_local
@@ -821,6 +1069,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                                 visitor_id=mem_visitor_id,
                                 extraction=extraction,
                                 user_id=mem_user_id,
+                                bot_arm=mem_bot_arm,
                             )
                     except Exception as e:
                         logger.error(f"[Session {mem_session_id}] Memory extraction failed: {e}")
@@ -1103,6 +1352,7 @@ def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
                 mem_sid = session_id
                 mem_vid = db_session.visitor_id or ""
                 mem_uid = getattr(db_session, 'user_id', None)
+                mem_bot_arm = db_session.assigned_arm or "unknown"
                 mem_profile = db_session.prospect_profile or "{}"
                 mem_phase = db_session.current_phase
                 all_msgs_mem = (
@@ -1122,6 +1372,7 @@ def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
                             profile_json=mem_profile,
                             outcome="abandoned",
                             final_phase=mem_phase,
+                            bot_arm=mem_bot_arm,
                         )
                         if extraction:
                             from app.database import _get_session_local
@@ -1131,6 +1382,7 @@ def end_session(session_id: str, db: DBSessionType = Depends(get_db)):
                                 visitor_id=mem_vid,
                                 extraction=extraction,
                                 user_id=mem_uid,
+                                bot_arm=mem_bot_arm,
                             )
                     except Exception as e:
                         logger.error(f"[Session {mem_sid}] Abandon memory extraction failed: {e}")

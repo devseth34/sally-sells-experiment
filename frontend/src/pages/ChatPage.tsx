@@ -265,7 +265,15 @@ export function ChatPage() {
                     Continue Conversation
                   </button>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
+                      // End the previous session so memory extraction runs before new session
+                      if (resumeData?.sessionId) {
+                        try {
+                          await endSession(resumeData.sessionId);
+                        } catch (err) {
+                          console.error("Failed to end previous session:", err);
+                        }
+                      }
                       setResumeData(null);
                       setShowModal(true);
                     }}
