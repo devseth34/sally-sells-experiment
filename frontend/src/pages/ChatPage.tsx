@@ -7,7 +7,8 @@ import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
 import { AuthModal } from "../components/chat/AuthModal.tsx";
-import { createSession, sendMessage, endSession, endSessionBeacon, checkActiveSession, getSavedUserInfo, clearAuth } from "../lib/api";
+import { createSession, sendMessage, endSession, endSessionBeacon, checkActiveSession, getSavedUserInfo, clearAuth, switchBot, clearVisitorMemory } from "../lib/api";
+import { BotSwitcher } from "../components/chat/BotSwitcher.tsx";
 import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
@@ -195,6 +196,66 @@ export function ChatPage() {
     setShowModal(true);
   };
 
+  const handleSwitchBot = async (newBot: BotArm) => {
+    if (!sessionId || isLoading) return;
+
+    try {
+      setIsLoading(true);
+      const res = await switchBot(sessionId, newBot);
+
+      // Update state to the new session
+      setSessionId(res.new_session_id);
+      setCurrentPhase(res.current_phase);
+      setBotDisplayName(res.bot_display_name);
+      setAssignedArm(res.new_arm);
+
+      // Keep existing messages and append a divider + new greeting
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `switch-${Date.now()}`,
+          role: "assistant" as const,
+          content: `--- Switched to ${res.bot_display_name} ---`,
+          timestamp: Date.now() / 1000,
+          phase: res.current_phase,
+        },
+        res.greeting,
+      ]);
+    } catch (err) {
+      console.error("Failed to switch bot:", err);
+      alert("Failed to switch bot. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetMemory = async () => {
+    if (!confirm("This will clear all stored memory about you. Continue?")) return;
+    try {
+      await clearVisitorMemory();
+      // End current session if active
+      if (sessionId && !sessionEnded) {
+        await endSession(sessionId);
+      }
+      // Reset all state
+      setSessionId(null);
+      setMessages([]);
+      setCurrentPhase("CONNECTION");
+      setSessionEnded(false);
+      setPreConviction(null);
+      setShowPostModal(false);
+      setCdsResult(null);
+      setBotDisplayName("Sally");
+      setAssignedArm("sally_nepq");
+      setSeconds(0);
+      if (timerRef.current) clearInterval(timerRef.current);
+      setShowModal(true);
+      alert("Memory cleared. Starting fresh.");
+    } catch (err) {
+      console.error("Failed to reset memory:", err);
+    }
+  };
+
   return (
     <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
@@ -311,6 +372,17 @@ export function ChatPage() {
                   Pre-score: {preConviction}/10
                 </span>
               )}
+              <BotSwitcher
+                currentArm={assignedArm}
+                onSwitch={handleSwitchBot}
+                disabled={isLoading || sessionEnded}
+              />
+              <button
+                onClick={handleResetMemory}
+                className="text-[10px] text-red-500/60 hover:text-red-400 transition-colors"
+              >
+                Reset Memory
+              </button>
               <span
                 className={`text-xs font-mono ${
                   seconds > 1700

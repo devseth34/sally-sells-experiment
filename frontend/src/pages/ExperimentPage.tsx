@@ -3,9 +3,10 @@ import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ExperimentSurveyModal } from "../components/chat/ExperimentSurveyModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
-import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
+import { createSession, sendMessage, endSession, endSessionBeacon, switchBot, clearVisitorMemory } from "../lib/api";
+import { BotSwitcher } from "../components/chat/BotSwitcher.tsx";
 import { formatTime } from "../lib/utils";
-import type { MessageResponse, PostConvictionResponse } from "../lib/api";
+import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
 export function ExperimentPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -17,6 +18,10 @@ export function ExperimentPage() {
   const [showPostModal, setShowPostModal] = useState(false);
   const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
   const [currentPhase, setCurrentPhase] = useState("CONVERSATION");
+
+  // Bot switching state
+  const [botDisplayName, setBotDisplayName] = useState<string>("AI Assistant");
+  const [assignedArm, setAssignedArm] = useState<string>("sally_nepq");
 
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -66,6 +71,8 @@ export function ExperimentPage() {
       setSessionId(res.session_id);
       setCurrentPhase(res.current_phase);
       setPreConviction(res.pre_conviction);
+      setBotDisplayName(res.bot_display_name);
+      setAssignedArm(res.assigned_arm);
       setMessages([res.greeting]);
       setShowSurvey(false);
       setSeconds(0);
@@ -120,9 +127,67 @@ export function ExperimentPage() {
     setPreConviction(null);
     setShowPostModal(false);
     setCdsResult(null);
+    setBotDisplayName("AI Assistant");
+    setAssignedArm("sally_nepq");
     setSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     setShowSurvey(true);
+  };
+
+  const handleSwitchBot = async (newBot: BotArm) => {
+    if (!sessionId || isLoading) return;
+
+    try {
+      setIsLoading(true);
+      const res = await switchBot(sessionId, newBot);
+
+      setSessionId(res.new_session_id);
+      setCurrentPhase(res.current_phase);
+      setBotDisplayName(res.bot_display_name);
+      setAssignedArm(res.new_arm);
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `switch-${Date.now()}`,
+          role: "assistant" as const,
+          content: `--- Switched to ${res.bot_display_name} ---`,
+          timestamp: Date.now() / 1000,
+          phase: res.current_phase,
+        },
+        res.greeting,
+      ]);
+    } catch (err) {
+      console.error("Failed to switch bot:", err);
+      alert("Failed to switch bot. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetMemory = async () => {
+    if (!confirm("This will clear all stored memory about you. Continue?")) return;
+    try {
+      await clearVisitorMemory();
+      if (sessionId && !sessionEnded) {
+        await endSession(sessionId);
+      }
+      setSessionId(null);
+      setMessages([]);
+      setCurrentPhase("CONVERSATION");
+      setSessionEnded(false);
+      setPreConviction(null);
+      setShowPostModal(false);
+      setCdsResult(null);
+      setBotDisplayName("AI Assistant");
+      setAssignedArm("sally_nepq");
+      setSeconds(0);
+      if (timerRef.current) clearInterval(timerRef.current);
+      setShowSurvey(true);
+      alert("Memory cleared. Starting fresh.");
+    } catch (err) {
+      console.error("Failed to reset memory:", err);
+    }
   };
 
   return (
@@ -168,8 +233,19 @@ export function ExperimentPage() {
       {/* Active chat */}
       {sessionId && (
         <>
-          {/* Minimal status bar — timer only, no phase indicator or bot name */}
-          <div className="flex items-center justify-end px-4 py-2 border-b border-zinc-800 bg-zinc-950/80">
+          {/* Minimal status bar — timer + bot switcher + reset */}
+          <div className="flex items-center justify-end gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-950/80">
+            <BotSwitcher
+              currentArm={assignedArm}
+              onSwitch={handleSwitchBot}
+              disabled={isLoading || sessionEnded}
+            />
+            <button
+              onClick={handleResetMemory}
+              className="text-[10px] text-red-500/60 hover:text-red-400 transition-colors"
+            >
+              Reset Memory
+            </button>
             <span
               className={`text-xs font-mono ${
                 seconds > 1700 ? "text-red-400" : seconds > 1500 ? "text-amber-400" : "text-zinc-500"

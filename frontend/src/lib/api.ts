@@ -357,6 +357,27 @@ export async function clearVisitorMemory(): Promise<void> {
   localStorage.removeItem("sally_visitor_id");
 }
 
+// --- Bot Switching ---
+
+export interface SwitchBotResponse {
+  previous_session_id: string;
+  new_session_id: string;
+  new_arm: string;
+  bot_display_name: string;
+  current_phase: string;
+  greeting: MessageResponse;
+}
+
+export async function switchBot(sessionId: string, newBot: BotArm): Promise<SwitchBotResponse> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/switch`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ new_bot: newBot }),
+  });
+  if (!res.ok) throw new Error(`Failed to switch bot: ${res.statusText}`);
+  return res.json();
+}
+
 // --- Experiment Monitoring ---
 
 export interface CdsSummaryResponse {

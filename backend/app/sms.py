@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session as DBSessionType
 
 from app.database import get_db, DBSession, DBMessage, _get_session_local
 from app.schemas import NepqPhase, BotArm
-from app.bot_router import route_message, get_greeting as bot_get_greeting
+from app.bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
 from app.memory import (
     extract_memory_from_session, store_memory,
     load_visitor_memory, format_memory_for_prompt,
@@ -168,6 +168,157 @@ async def sms_webhook(
         return twiml_reply(
             "Got it, I won't send any more follow-ups. "
             "You can still text me anytime to continue our conversation."
+        )
+
+    # --- Check for bot switch ---
+    if upper.startswith("SWITCH"):
+        parts = message.upper().split()
+        bot_map = {"SALLY": BotArm.SALLY_NEPQ, "HANK": BotArm.HANK_HYPES, "IVY": BotArm.IVY_INFORMS}
+
+        if len(parts) < 2 or parts[1] not in bot_map:
+            return twiml_reply("To switch bots, text: SWITCH SALLY, SWITCH HANK, or SWITCH IVY")
+
+        target_arm = bot_map[parts[1]]
+        session = _find_active_sms_session(db, phone)
+
+        if not session:
+            return twiml_reply("No active conversation to switch. Text anything to start a new one.")
+
+        if session.sms_state != "active":
+            return twiml_reply("Can only switch during an active conversation. Text NEW to start fresh.")
+
+        current_arm = BotArm(session.assigned_arm) if session.assigned_arm else BotArm.SALLY_NEPQ
+        if current_arm == target_arm:
+            return twiml_reply(f"You're already talking to {BOT_DISPLAY_NAMES[target_arm]}!")
+
+        # Build conversation summary
+        messages_db = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == session.id)
+            .order_by(DBMessage.timestamp)
+            .all()
+        )
+        summary_lines = []
+        for m in messages_db[-20:]:
+            role = "User" if m.role == "user" else "Bot"
+            content = m.content[:200] + "..." if len(m.content) > 200 else m.content
+            summary_lines.append(f"{role}: {content}")
+        conversation_summary = "\n".join(summary_lines)
+        profile_json = session.prospect_profile or "{}"
+
+        # End current session
+        session.status = "switched"
+        session.end_time = time.time()
+        session.sms_state = "done"
+
+        # Create new session
+        new_session_id = str(uuid.uuid4())[:8].upper()
+        now = time.time()
+        initial_phase = NepqPhase.CONNECTION.value if target_arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+
+        new_session = DBSession(
+            id=new_session_id,
+            status="active",
+            current_phase=initial_phase,
+            pre_conviction=session.pre_conviction,
+            assigned_arm=target_arm.value,
+            visitor_id=session.visitor_id,
+            user_id=getattr(session, 'user_id', None),
+            phone_number=phone,
+            channel="sms",
+            sms_state="active",
+            experiment_mode=getattr(session, 'experiment_mode', None),
+            start_time=now,
+            message_count=1,
+            retry_count=0,
+            turn_number=0,
+            prospect_profile=profile_json,
+            thought_logs="[]",
+        )
+        db.add(new_session)
+
+        # Generate contextual greeting
+        switch_context = (
+            f"[SYSTEM: The user just switched from {BOT_DISPLAY_NAMES[current_arm]} to you via SMS. "
+            f"Conversation summary:\n{conversation_summary}\n\n"
+            f"Send a brief acknowledgment and continue naturally. 2-3 sentences max. "
+            f"Reference something specific from the conversation.]"
+        )
+
+        from app.bots.base import get_client as get_anthropic_client
+        try:
+            if target_arm == BotArm.HANK_HYPES:
+                from app.bots.hank import HankBot
+                bot = HankBot()
+            elif target_arm == BotArm.IVY_INFORMS:
+                from app.bots.ivy import IvyBot
+                bot = IvyBot()
+            else:
+                bot = None
+
+            if bot:
+                resp = get_anthropic_client().messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=200,
+                    system=bot.system_prompt,
+                    messages=[{"role": "user", "content": switch_context}],
+                )
+                greeting_text = resp.content[0].text.strip()
+            else:
+                greeting_text = "Hey, I'm Sally. I've got the context from your previous chat — let me pick up from here. What were you thinking about?"
+        except Exception as e:
+            logger.error(f"[SMS Switch] Greeting generation failed: {e}")
+            greeting_text = f"Hey, I'm {BOT_DISPLAY_NAMES[target_arm]}. I've got context from your chat — let's continue."
+
+        # Save greeting
+        greeting_msg = DBMessage(
+            id=str(uuid.uuid4()),
+            session_id=new_session_id,
+            role="assistant",
+            content=greeting_text,
+            timestamp=now,
+            phase=initial_phase,
+        )
+        db.add(greeting_msg)
+        db.commit()
+
+        logger.info(f"[SMS Switch] {session.id} ({current_arm.value}) → {new_session_id} ({target_arm.value})")
+
+        return twiml_reply(f"Switched to {BOT_DISPLAY_NAMES[target_arm]}.\n\n{greeting_text}")
+
+    # --- Check for memory reset ---
+    if upper == "RESET":
+        from app.database import DBMemoryFact, DBSessionSummary
+
+        # End any active session
+        session = _find_active_sms_session(db, phone)
+        if session:
+            session.status = "abandoned"
+            session.end_time = time.time()
+            session.sms_state = "done"
+
+        # Find visitor_id from any session with this phone number
+        any_session = (
+            db.query(DBSession)
+            .filter(DBSession.phone_number == phone)
+            .order_by(DBSession.start_time.desc())
+            .first()
+        )
+
+        facts_deleted = 0
+        summaries_deleted = 0
+        if any_session and any_session.visitor_id:
+            vid = any_session.visitor_id
+            facts_deleted = db.query(DBMemoryFact).filter(DBMemoryFact.visitor_id == vid).delete()
+            summaries_deleted = db.query(DBSessionSummary).filter(DBSessionSummary.visitor_id == vid).delete()
+
+        db.commit()
+
+        logger.info(f"[SMS Reset] Phone {phone}: {facts_deleted} facts, {summaries_deleted} summaries deleted")
+
+        return twiml_reply(
+            f"Memory cleared ({facts_deleted} facts, {summaries_deleted} notes removed). "
+            "Text anything to start completely fresh."
         )
 
     # --- Find existing session ---

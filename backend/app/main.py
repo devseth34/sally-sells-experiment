@@ -1839,6 +1839,190 @@ def export_csv(db: DBSessionType = Depends(get_db)):
     )
 
 
+# --- Bot Switching ---
+
+@app.post("/api/sessions/{session_id}/switch")
+def switch_bot(
+    session_id: str,
+    request: dict,  # {"new_bot": "sally_nepq" | "hank_hypes" | "ivy_informs"}
+    db: DBSessionType = Depends(get_db),
+    current_user: Optional[DBUser] = Depends(get_optional_user),
+):
+    """
+    Switch to a different bot mid-conversation.
+
+    1. Ends the current session with status='switched'
+    2. Builds a conversation summary from the current session
+    3. Creates a new session with the new bot, injecting the summary as context
+    4. Returns the new session with the new bot's greeting
+    """
+    new_bot_str = request.get("new_bot")
+    if not new_bot_str or new_bot_str not in [b.value for b in BotArm]:
+        raise HTTPException(status_code=400, detail=f"Invalid bot: {new_bot_str}. Use: sally_nepq, hank_hypes, ivy_informs")
+
+    new_arm = BotArm(new_bot_str)
+
+    # Find current session
+    db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    current_arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
+    if current_arm == new_arm:
+        raise HTTPException(status_code=400, detail="Already talking to this bot")
+
+    # Build conversation summary from the current session
+    messages = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == session_id)
+        .order_by(DBMessage.timestamp)
+        .all()
+    )
+
+    # Create a compact summary of the conversation so far
+    summary_lines = []
+    for m in messages[-20:]:  # Last 20 messages max
+        role = "User" if m.role == "user" else "Bot"
+        content = m.content[:200] + "..." if len(m.content) > 200 else m.content
+        summary_lines.append(f"{role}: {content}")
+    conversation_summary = "\n".join(summary_lines)
+
+    # Get prospect profile from current session
+    profile_json = db_session.prospect_profile or "{}"
+
+    # End current session as "switched"
+    db_session.status = "switched"
+    db_session.end_time = time.time()
+    if hasattr(db_session, 'sms_state') and db_session.sms_state:
+        db_session.sms_state = "done"
+
+    # Create new session
+    new_session_id = str(uuid.uuid4())[:8].upper()
+    now = time.time()
+    initial_phase = NepqPhase.CONNECTION.value if new_arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+
+    visitor_id = db_session.visitor_id
+    user_id = current_user.id if current_user else getattr(db_session, 'user_id', None)
+
+    new_db_session = DBSession(
+        id=new_session_id,
+        status="active",
+        current_phase=initial_phase,
+        pre_conviction=db_session.pre_conviction,
+        assigned_arm=new_arm.value,
+        visitor_id=visitor_id,
+        user_id=user_id,
+        phone_number=getattr(db_session, 'phone_number', None),
+        channel=getattr(db_session, 'channel', 'web'),
+        sms_state="active" if getattr(db_session, 'channel', None) == "sms" else None,
+        experiment_mode=getattr(db_session, 'experiment_mode', None),
+        start_time=now,
+        message_count=1,
+        retry_count=0,
+        turn_number=0,
+        prospect_profile=profile_json,  # Carry forward the prospect profile
+        thought_logs="[]",
+    )
+    db.add(new_db_session)
+
+    # Generate a context-aware greeting from the new bot
+    # Inject the conversation summary so the new bot knows what was discussed
+    switch_context = (
+        f"[SYSTEM: The user just switched from {BOT_DISPLAY_NAMES[current_arm]} to you. "
+        f"Here is a summary of their conversation so far:\n\n"
+        f"{conversation_summary}\n\n"
+        f"Acknowledge the switch briefly and naturally, then continue the conversation "
+        f"from where it left off. Do NOT re-introduce yourself with your standard greeting. "
+        f"Do NOT restart the conversation from scratch. Reference something specific "
+        f"from the summary to show you have context.]"
+    )
+
+    # Generate a contextual greeting using Claude
+    from app.bots.base import get_client as get_anthropic_client
+    try:
+        bot_instance = None
+        if new_arm == BotArm.HANK_HYPES:
+            from app.bots.hank import HankBot
+            bot_instance = HankBot()
+        elif new_arm == BotArm.IVY_INFORMS:
+            from app.bots.ivy import IvyBot
+            bot_instance = IvyBot()
+
+        if bot_instance:
+            # For Hank/Ivy: use their system prompt + switch context
+            response = get_anthropic_client().messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=200,
+                system=bot_instance.system_prompt,
+                messages=[{"role": "user", "content": switch_context}],
+            )
+            greeting_text = response.content[0].text.strip()
+        else:
+            # For Sally: simpler greeting since the engine will handle context
+            greeting_text = (
+                "Hey, I'm Sally. I can see what you've been discussing — "
+                "let me pick up from here. What's on your mind?"
+            )
+    except Exception as e:
+        logger.error(f"[Switch] Failed to generate contextual greeting: {e}")
+        greeting_text = f"Hey, I'm {BOT_DISPLAY_NAMES[new_arm]}. I've got context from your previous chat — let's continue."
+
+    # Save greeting message
+    greeting_id = str(uuid.uuid4())
+    greeting_msg = DBMessage(
+        id=greeting_id,
+        session_id=new_session_id,
+        role="assistant",
+        content=greeting_text,
+        timestamp=now,
+        phase=initial_phase,
+    )
+    db.add(greeting_msg)
+    db.commit()
+
+    # Trigger memory extraction on the ended session (background thread)
+    if visitor_id or user_id:
+        try:
+            mem_transcript = [{"role": m.role, "content": m.content, "phase": m.phase} for m in messages]
+            def _extract():
+                try:
+                    extraction = extract_memory_from_session(
+                        session_id=session_id, visitor_id=visitor_id or "",
+                        transcript=mem_transcript, profile_json=profile_json,
+                        outcome="switched", final_phase=db_session.current_phase,
+                        bot_arm=current_arm.value,
+                    )
+                    if extraction:
+                        store_memory(
+                            db_session_maker=_get_session_local(),
+                            session_id=session_id, visitor_id=visitor_id or "",
+                            extraction=extraction, user_id=user_id,
+                            bot_arm=current_arm.value,
+                        )
+                except Exception as e:
+                    logger.error(f"[Switch] Memory extraction failed for {session_id}: {e}")
+            threading.Thread(target=_extract, daemon=True).start()
+        except Exception as e:
+            logger.error(f"[Switch] Memory extraction thread failed: {e}")
+
+    logger.info(f"[Switch] {session_id} ({current_arm.value}) → {new_session_id} ({new_arm.value})")
+
+    return {
+        "previous_session_id": session_id,
+        "new_session_id": new_session_id,
+        "new_arm": new_arm.value,
+        "bot_display_name": BOT_DISPLAY_NAMES[new_arm],
+        "current_phase": initial_phase,
+        "greeting": {
+            "id": greeting_id,
+            "role": "assistant",
+            "content": greeting_text,
+            "timestamp": now,
+            "phase": initial_phase,
+        },
+    }
+
+
 # --- Gmail Escalation ---
 
 def _send_escalation_email(session_id: str, profile: dict, transcript: str) -> bool:
