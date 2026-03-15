@@ -127,39 +127,6 @@ def _parse_number(text: str) -> int | None:
     return None
 
 
-# --- Timeout Handling ---
-
-TIMEOUT_SECONDS = 86400  # 24 hours
-
-
-def _check_and_handle_timeout(db: DBSessionType, session: DBSession) -> bool:
-    """
-    If session has been inactive for >24 hours, mark it abandoned.
-    Returns True if session was timed out.
-    """
-    if session.sms_state == "active":
-        last_activity = session.start_time
-        # Check last message timestamp
-        last_msg = (
-            db.query(DBMessage)
-            .filter(DBMessage.session_id == session.id)
-            .order_by(DBMessage.timestamp.desc())
-            .first()
-        )
-        if last_msg:
-            last_activity = last_msg.timestamp
-
-        if time.time() - last_activity > TIMEOUT_SECONDS:
-            session.status = "abandoned"
-            session.end_time = time.time()
-            session.sms_state = "done"
-            db.commit()
-            logger.info(f"[SMS] Session {session.id} timed out after 24h inactivity")
-            return True
-
-    return False
-
-
 # --- The Webhook ---
 
 @router.post("/api/sms/webhook")
@@ -181,7 +148,8 @@ async def sms_webhook(
     logger.info(f"[SMS] Incoming from {phone}: '{message[:100]}'")
 
     # --- Check for opt-out ---
-    if message.upper() in ("STOP", "END", "QUIT", "CANCEL"):
+    upper = message.upper()
+    if upper in ("STOP", "END", "QUIT", "CANCEL"):
         session = _find_active_sms_session(db, phone)
         if session:
             session.status = "abandoned"
@@ -191,12 +159,19 @@ async def sms_webhook(
             logger.info(f"[SMS] Session {session.id} ended by opt-out")
         return twiml_reply("Got it, conversation ended. Text anytime to start a new one.")
 
+    # --- Check for follow-up pause ---
+    if upper == "PAUSE":
+        session = _find_active_sms_session(db, phone)
+        if session:
+            session.followup_paused = "true"
+            db.commit()
+        return twiml_reply(
+            "Got it, I won't send any more follow-ups. "
+            "You can still text me anytime to continue our conversation."
+        )
+
     # --- Find existing session ---
     session = _find_active_sms_session(db, phone)
-
-    # --- Check for session timeout ---
-    if session and _check_and_handle_timeout(db, session):
-        session = None  # Force new session creation
 
     # --- Check for "NEW" restart ---
     if message.upper() == "NEW":
@@ -272,6 +247,10 @@ async def sms_webhook(
 
     # --- State: active ---
     if session.sms_state == "active":
+        # User is re-engaged — reset follow-up pause so follow-ups can resume later
+        if getattr(session, 'followup_paused', None) == "true":
+            session.followup_paused = None
+            db.commit()
         return _handle_active_message(session, message, db)
 
     # --- State: post_survey ---
@@ -322,6 +301,28 @@ def _handle_active_message(session: DBSession, message: str, db: DBSessionType) 
     current_phase_str = session.current_phase
     current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
 
+    # Detect return-after-gap for resumption context
+    last_msg = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == session_id)
+        .order_by(DBMessage.timestamp.desc())
+        .first()
+    )
+    gap_seconds = now - last_msg.timestamp if last_msg else 0
+    gap_hours = gap_seconds / 3600
+
+    resumption_context = ""
+    if gap_hours >= 1:
+        gap_str = f"{int(gap_hours)} hours" if gap_hours < 48 else f"{int(gap_hours / 24)} days"
+        resumption_context = (
+            f"\n\n[SYSTEM NOTE: The user is returning after {gap_str} of silence. "
+            f"They were previously in the {current_phase_str} phase. "
+            f"Acknowledge the gap naturally (e.g., 'hey, good to hear from you again') "
+            f"and continue where you left off. Do NOT restart the conversation from scratch. "
+            f"Reference what you were discussing before.]"
+        )
+        logger.info(f"[SMS:{session_id}] User returning after {gap_str} gap")
+
     # Load memory context
     memory_block = ""
     if session.visitor_id or getattr(session, 'user_id', None):
@@ -334,6 +335,11 @@ def _handle_active_message(session: DBSession, message: str, db: DBSessionType) 
             logger.error(f"[SMS:{session_id}] Memory load failed: {e}")
             db.rollback()
             session = db.query(DBSession).filter(DBSession.id == session_id).first()
+
+    # Combine memory + resumption context
+    full_context = memory_block
+    if resumption_context:
+        full_context = (memory_block + resumption_context) if memory_block else resumption_context
 
     # Save user message
     user_msg = DBMessage(
@@ -369,7 +375,7 @@ def _handle_active_message(session: DBSession, message: str, db: DBSessionType) 
             arm=arm,
             user_message=message,
             conversation_history=conversation_history,
-            memory_context=memory_block,
+            memory_context=full_context,
             current_phase=current_phase or NepqPhase.CONNECTION,
             profile_json=session.prospect_profile or "{}",
             retry_count=session.retry_count,

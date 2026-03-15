@@ -60,6 +60,7 @@ from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
 from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt, load_recent_conversation_context
 from .sms import router as sms_router
+from .followup import start_followup_worker
 import threading
 
 logging.basicConfig(level=logging.INFO)
@@ -91,10 +92,25 @@ def on_startup():
     else:
         logger.warning("Google Sheets logging: DISABLED (GOOGLE_SHEETS_WEBHOOK_URL not set)")
 
+    # Start SMS follow-up worker (checks every 5 minutes)
+    if os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN"):
+        start_followup_worker(interval_seconds=300)
+        logger.info("SMS follow-up worker: ENABLED")
+    else:
+        logger.warning("SMS follow-up worker: DISABLED (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN not set)")
+
 
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Sally Sells API", "version": "2.0.0", "engine": "three-layer-nepq"}
+
+
+@app.post("/api/debug/trigger-followups")
+def trigger_followups():
+    """Debug: manually trigger the follow-up check cycle."""
+    from .followup import check_and_send_followups
+    check_and_send_followups()
+    return {"status": "ok", "message": "Follow-up check completed"}
 
 
 # --- Authentication ---

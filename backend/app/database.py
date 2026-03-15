@@ -98,6 +98,11 @@ class DBSession(Base):
     channel = Column(String, nullable=True)                    # "web" or "sms"
     sms_state = Column(String, nullable=True)                  # "pre_survey", "active", "post_survey", "done"
 
+    # Follow-up sequencing
+    followup_count = Column(Integer, default=0)          # How many follow-ups sent (max 3)
+    last_followup_at = Column(Float, nullable=True)       # Timestamp of last follow-up sent
+    followup_paused = Column(String, nullable=True)       # "true" if user texted PAUSE
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -181,6 +186,9 @@ def init_db():
             "phone_number": "ALTER TABLE sessions ADD COLUMN phone_number VARCHAR",
             "channel": "ALTER TABLE sessions ADD COLUMN channel VARCHAR",
             "sms_state": "ALTER TABLE sessions ADD COLUMN sms_state VARCHAR",
+            "followup_count": "ALTER TABLE sessions ADD COLUMN followup_count INTEGER DEFAULT 0",
+            "last_followup_at": "ALTER TABLE sessions ADD COLUMN last_followup_at FLOAT",
+            "followup_paused": "ALTER TABLE sessions ADD COLUMN followup_paused VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():
