@@ -90,6 +90,14 @@ class DBSession(Base):
     # User authentication
     user_id = Column(String, nullable=True, index=True)  # FK to users.id (nullable for anonymous)
 
+    # Experiment mode: blinded random assignment
+    experiment_mode = Column(String, nullable=True)  # "true" or null
+
+    # SMS / channel tracking
+    phone_number = Column(String, nullable=True, index=True)  # E.164 format, e.g. "+14155551234"
+    channel = Column(String, nullable=True)                    # "web" or "sms"
+    sms_state = Column(String, nullable=True)                  # "pre_survey", "active", "post_survey", "done"
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -169,6 +177,10 @@ def init_db():
             "assigned_arm": "ALTER TABLE sessions ADD COLUMN assigned_arm VARCHAR",
             "visitor_id": "ALTER TABLE sessions ADD COLUMN visitor_id VARCHAR",
             "user_id": "ALTER TABLE sessions ADD COLUMN user_id VARCHAR",
+            "experiment_mode": "ALTER TABLE sessions ADD COLUMN experiment_mode VARCHAR",
+            "phone_number": "ALTER TABLE sessions ADD COLUMN phone_number VARCHAR",
+            "channel": "ALTER TABLE sessions ADD COLUMN channel VARCHAR",
+            "sms_state": "ALTER TABLE sessions ADD COLUMN sms_state VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():
@@ -180,6 +192,7 @@ def init_db():
         for idx_sql in [
             "CREATE INDEX IF NOT EXISTS ix_sessions_visitor_id ON sessions (visitor_id)",
             "CREATE INDEX IF NOT EXISTS ix_sessions_user_id ON sessions (user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_phone ON sessions (phone_number)",
         ]:
             try:
                 conn.execute(text(idx_sql))

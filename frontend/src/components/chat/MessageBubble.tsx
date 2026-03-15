@@ -4,6 +4,7 @@ import type { MessageResponse } from "../../lib/api";
 
 interface MessageBubbleProps {
   message: MessageResponse;
+  hidePhase?: boolean;
 }
 
 /**
@@ -67,7 +68,7 @@ function renderWithLinks(text: string) {
   });
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, hidePhase }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const phaseColor = getPhaseColor(message.phase);
 
@@ -87,15 +88,17 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <span className="text-[10px] text-zinc-600">
             {formatTimestamp(message.timestamp)}
           </span>
-          <span
-            className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider"
-            style={{
-              background: `${phaseColor}15`,
-              color: phaseColor,
-            }}
-          >
-            {getPhaseLabel(message.phase)}
-          </span>
+          {!hidePhase && (
+            <span
+              className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider"
+              style={{
+                background: `${phaseColor}15`,
+                color: phaseColor,
+              }}
+            >
+              {getPhaseLabel(message.phase)}
+            </span>
+          )}
         </div>
       </div>
     </div>

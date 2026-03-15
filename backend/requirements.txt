@@ -12,3 +12,5 @@ requests
 eval-type-backport
 bcrypt
 python-jose[cryptography]
+python-multipart
+python-multipart

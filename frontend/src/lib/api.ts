@@ -200,16 +200,24 @@ export interface MetricsResponse {
 
 // --- Session Management (with auth headers) ---
 
-export async function createSession(preConviction: number, selectedBot: BotArm = "sally_nepq"): Promise<CreateSessionResponse> {
+export async function createSession(
+  preConviction: number,
+  selectedBot?: BotArm,
+  experimentMode: boolean = false,
+): Promise<CreateSessionResponse> {
   const visitorId = getOrCreateVisitorId();
+  const body: Record<string, unknown> = {
+    pre_conviction: preConviction,
+    visitor_id: visitorId,
+    experiment_mode: experimentMode,
+  };
+  if (selectedBot) {
+    body.selected_bot = selectedBot;
+  }
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",
     headers: authHeaders(),
-    body: JSON.stringify({
-      pre_conviction: preConviction,
-      selected_bot: selectedBot,
-      visitor_id: visitorId,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Failed to create session: ${res.statusText}`);
   return res.json();
@@ -347,4 +355,30 @@ export async function clearVisitorMemory(): Promise<void> {
   if (!res.ok) throw new Error(`Failed to clear memory: ${res.statusText}`);
   // Remove localStorage visitor identity so next session creates a fresh one
   localStorage.removeItem("sally_visitor_id");
+}
+
+// --- Experiment Monitoring ---
+
+export interface CdsSummaryResponse {
+  arms: Record<string, {
+    total_sessions: number;
+    completed_cds: number;
+    mean_cds: number | null;
+    min_cds: number | null;
+    max_cds: number | null;
+  }>;
+  sally_lift_vs_controls: Record<string, number>;
+  experiment_session_counts: Record<string, number>;
+  target: {
+    min_sessions_per_arm: number;
+    total_target: number;
+    sally_cds_target: number;
+    lift_target: number;
+  };
+}
+
+export async function getCdsSummary(): Promise<CdsSummaryResponse> {
+  const res = await fetch(`${API_BASE}/monitoring/cds-summary`);
+  if (!res.ok) throw new Error(`Failed to get CDS summary: ${res.statusText}`);
+  return res.json();
 }

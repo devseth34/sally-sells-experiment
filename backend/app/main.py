@@ -59,6 +59,7 @@ from .bot_router import route_message, get_greeting as bot_get_greeting, BOT_DIS
 from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
 from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt, load_recent_conversation_context
+from .sms import router as sms_router
 import threading
 
 logging.basicConfig(level=logging.INFO)
@@ -73,6 +74,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(sms_router)
 
 
 @app.on_event("startup")
@@ -578,7 +581,14 @@ def create_session(
     session_id = str(uuid.uuid4())[:8].upper()
     now = time.time()
 
-    arm = request.selected_bot
+    # Determine arm: explicit selection or random assignment (experiment mode)
+    if request.selected_bot is not None:
+        arm = request.selected_bot
+    else:
+        import random as _random
+        arm = _random.choice(list(BotArm))
+        logger.info(f"[Session {session_id}] Experiment mode: randomly assigned to {arm.value}")
+
     visitor_id = request.visitor_id
     initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
 
@@ -714,6 +724,7 @@ def create_session(
         assigned_arm=arm.value,
         visitor_id=visitor_id,
         user_id=user_id,
+        experiment_mode="true" if request.experiment_mode else None,
         start_time=now,
         message_count=1,
         retry_count=0,
@@ -740,12 +751,20 @@ def create_session(
     db.add(greeting_msg)
     db.commit()
 
+    # In experiment mode, mask the real arm from the frontend
+    if request.experiment_mode:
+        display_arm = "experiment"
+        display_name = "AI Assistant"
+    else:
+        display_arm = arm.value
+        display_name = BOT_DISPLAY_NAMES[arm]
+
     return CreateSessionResponse(
         session_id=session_id,
         current_phase=initial_phase,
         pre_conviction=request.pre_conviction,
-        assigned_arm=arm.value,
-        bot_display_name=BOT_DISPLAY_NAMES[arm],
+        assigned_arm=display_arm,
+        bot_display_name=display_name,
         greeting=MessageResponse(
             id=greeting_id,
             role="assistant",
@@ -1325,6 +1344,73 @@ def get_metrics(db: DBSessionType = Depends(get_db)):
         phase_distribution=phase_dist,
         failure_modes=failure_modes,
     )
+
+
+# --- CDS Monitoring (Experiment Mode) ---
+
+@app.get("/api/monitoring/cds-summary")
+def get_cds_summary(db: DBSessionType = Depends(get_db)):
+    """Per-arm CDS summary for experiment monitoring. Only includes experiment-mode sessions."""
+    from sqlalchemy import func as sqlfunc
+
+    results = (
+        db.query(
+            DBSession.assigned_arm,
+            sqlfunc.count(DBSession.id).label("total_sessions"),
+            sqlfunc.count(DBSession.cds_score).label("completed_cds"),
+            sqlfunc.avg(DBSession.cds_score).label("mean_cds"),
+            sqlfunc.min(DBSession.cds_score).label("min_cds"),
+            sqlfunc.max(DBSession.cds_score).label("max_cds"),
+        )
+        .filter(
+            DBSession.assigned_arm.isnot(None),
+            DBSession.experiment_mode == "true",
+        )
+        .group_by(DBSession.assigned_arm)
+        .all()
+    )
+
+    arms = {}
+    for row in results:
+        arms[row.assigned_arm] = {
+            "total_sessions": row.total_sessions,
+            "completed_cds": row.completed_cds,
+            "mean_cds": round(float(row.mean_cds), 3) if row.mean_cds else None,
+            "min_cds": row.min_cds,
+            "max_cds": row.max_cds,
+        }
+
+    # Sally's lift vs each control
+    sally = arms.get("sally_nepq", {})
+    sally_mean = sally.get("mean_cds")
+    lifts = {}
+    if sally_mean is not None:
+        for arm_name in ["hank_hypes", "ivy_informs"]:
+            control = arms.get(arm_name, {})
+            control_mean = control.get("mean_cds")
+            if control_mean is not None:
+                lifts[arm_name] = round(sally_mean - float(control_mean), 3)
+
+    # Session counts by status for experiment sessions
+    status_counts = {}
+    for status in ["active", "completed", "abandoned"]:
+        count = db.query(DBSession).filter(
+            DBSession.experiment_mode == "true",
+            DBSession.status == status,
+        ).count()
+        status_counts[status] = count
+
+    return {
+        "arms": arms,
+        "sally_lift_vs_controls": lifts,
+        "experiment_session_counts": status_counts,
+        "target": {
+            "min_sessions_per_arm": 20,
+            "total_target": 60,
+            "sally_cds_target": 0.5,
+            "lift_target": 0.3,
+        },
+    }
 
 
 # --- End Session ---
