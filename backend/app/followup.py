@@ -232,6 +232,10 @@ def _build_profile_summary(profile_json: str) -> str:
 
 def send_sms(to: str, body: str) -> bool:
     """Send an outbound SMS via Twilio."""
+    if not to or len(to) < 11 or to.startswith("+141555") or to.startswith("+1555"):
+        logger.warning(f"[Followup] Blocked SMS to invalid/test number: {to}")
+        return False
+
     from_number = os.getenv("TWILIO_PHONE_NUMBER")
     if not from_number:
         logger.error("TWILIO_PHONE_NUMBER not set — cannot send follow-up")
@@ -303,6 +307,17 @@ def _process_session_followup(db, session: DBSession, now: float):
     # Skip if max follow-ups reached
     followup_count = session.followup_count or 0
     if followup_count >= config["max_followups"]:
+        return
+
+    # Skip fake/test phone numbers
+    phone = session.phone_number or ""
+    if not phone or len(phone) < 11:
+        logger.debug(f"[Followup] Skipping session {session.id}: invalid phone {phone}")
+        return
+    # Known test number prefixes (automated test suite uses +141555XXXX)
+    test_prefixes = ("+141555", "+1555", "+100000", "+14155500", "+14155501")
+    if any(phone.startswith(p) for p in test_prefixes):
+        logger.debug(f"[Followup] Skipping session {session.id}: test phone number {phone}")
         return
 
     # Find the last message (from either party)

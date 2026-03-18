@@ -113,6 +113,27 @@ def trigger_followups():
     return {"status": "ok", "message": "Follow-up check completed"}
 
 
+@app.post("/api/debug/cleanup-test-sessions")
+def cleanup_test_sessions(db: DBSessionType = Depends(get_db)):
+    """Mark all fake test phone number sessions as done so follow-up worker ignores them."""
+    import time as _time
+    count = (
+        db.query(DBSession)
+        .filter(
+            DBSession.channel == "sms",
+            DBSession.phone_number.like("+141555%"),
+            DBSession.sms_state != "done",
+        )
+        .update({
+            DBSession.sms_state: "done",
+            DBSession.status: "abandoned",
+            DBSession.end_time: _time.time(),
+        }, synchronize_session="fetch")
+    )
+    db.commit()
+    return {"status": "ok", "test_sessions_cleaned": count}
+
+
 # --- Authentication ---
 
 @app.post("/api/auth/register", response_model=AuthResponse)
