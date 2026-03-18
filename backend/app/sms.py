@@ -29,6 +29,7 @@ from app.memory import (
     extract_memory_from_session, store_memory,
     load_visitor_memory, format_memory_for_prompt,
 )
+from app.followup import send_sms
 import threading
 
 logger = logging.getLogger("sally.sms")
@@ -48,6 +49,12 @@ def twiml_reply(message: str) -> Response:
     segments = _split_sms(message)
     messages_xml = "".join(f"<Message>{_escape_xml(s)}</Message>" for s in segments)
     xml = f'<?xml version="1.0" encoding="UTF-8"?><Response>{messages_xml}</Response>'
+    return Response(content=xml, media_type="application/xml")
+
+
+def _empty_twiml() -> Response:
+    """Return an empty TwiML response (acknowledges receipt, sends no SMS)."""
+    xml = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
     return Response(content=xml, media_type="application/xml")
 
 
@@ -250,68 +257,23 @@ async def sms_webhook(
             thought_logs="[]",
         )
         db.add(new_session)
-
-        # Generate contextual greeting
-        switch_context = (
-            f"[SYSTEM: The user just switched from {BOT_DISPLAY_NAMES[current_arm]} to you via SMS. "
-            f"Conversation summary:\n{conversation_summary}\n\n"
-            f"Send a brief acknowledgment and continue naturally. 2-3 sentences max. "
-            f"Reference something specific from the conversation.]"
-        )
-
-        from app.bots.base import get_client as get_anthropic_client
-        try:
-            if target_arm == BotArm.HANK_HYPES:
-                from app.bots.hank import HankBot
-                bot = HankBot()
-            elif target_arm == BotArm.IVY_INFORMS:
-                from app.bots.ivy import IvyBot
-                bot = IvyBot()
-            else:
-                bot = None
-
-            if bot:
-                resp = get_anthropic_client().messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=200,
-                    system=bot.system_prompt,
-                    messages=[{"role": "user", "content": switch_context}],
-                )
-                greeting_text = resp.content[0].text.strip()
-            else:
-                # For Sally: generate a contextual greeting using the conversation summary
-                sally_switch_prompt = (
-                    f"You are Sally from 100x. The user just switched to you from another AI assistant via SMS. "
-                    f"Here's what they discussed:\n\n{conversation_summary}\n\n"
-                    f"Write a brief, warm greeting (2 sentences max) that acknowledges you have context "
-                    f"and asks a natural follow-up question based on what they shared. "
-                    f"Sound like a friend, not a robot. Keep it short for SMS."
-                )
-                resp = get_anthropic_client().messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=150,
-                    messages=[{"role": "user", "content": sally_switch_prompt}],
-                )
-                greeting_text = resp.content[0].text.strip()
-        except Exception as e:
-            logger.error(f"[SMS Switch] Greeting generation failed: {e}")
-            greeting_text = f"Hey, I'm {BOT_DISPLAY_NAMES[target_arm]}. I've got context from your chat — let's continue."
-
-        # Save greeting
-        greeting_msg = DBMessage(
-            id=str(uuid.uuid4()),
-            session_id=new_session_id,
-            role="assistant",
-            content=greeting_text,
-            timestamp=now,
-            phase=initial_phase,
-        )
-        db.add(greeting_msg)
         db.commit()
 
-        logger.info(f"[SMS Switch] {session.id} ({current_arm.value}) → {new_session_id} ({target_arm.value})")
+        old_session_id = session.id
+        target_display = BOT_DISPLAY_NAMES[target_arm]
+        current_display = BOT_DISPLAY_NAMES[current_arm]
 
-        return twiml_reply(f"Switched to {BOT_DISPLAY_NAMES[target_arm]}.\n\n{greeting_text}")
+        logger.info(f"[SMS Switch] {old_session_id} ({current_arm.value}) → {new_session_id} ({target_arm.value})")
+
+        # Generate greeting + send via REST API in background (avoids Twilio timeout)
+        threading.Thread(
+            target=_switch_greeting_async,
+            args=(new_session_id, phone, target_arm, conversation_summary,
+                  initial_phase, target_display, current_display),
+            daemon=True,
+        ).start()
+
+        return _empty_twiml()
 
     # --- Check for memory reset ---
     if upper == "RESET":
@@ -466,175 +428,342 @@ async def sms_webhook(
     return twiml_reply("Something went wrong. Text NEW to start over.")
 
 
+# --- Async Switch Greeting ---
+
+def _switch_greeting_async(
+    new_session_id, phone, target_arm, conversation_summary,
+    initial_phase, target_display, current_display,
+):
+    """Background thread: generate switch greeting via Claude and send via Twilio REST API."""
+    SessionLocal = _get_session_local()
+    db = SessionLocal()
+    try:
+        from app.bots.base import get_client as get_anthropic_client
+
+        switch_context = (
+            f"[SYSTEM: The user just switched from {current_display} to you via SMS. "
+            f"Conversation summary:\n{conversation_summary}\n\n"
+            f"Send a brief acknowledgment and continue naturally. 2-3 sentences max. "
+            f"Reference something specific from the conversation.]"
+        )
+
+        try:
+            if target_arm == BotArm.HANK_HYPES:
+                from app.bots.hank import HankBot
+                bot = HankBot()
+            elif target_arm == BotArm.IVY_INFORMS:
+                from app.bots.ivy import IvyBot
+                bot = IvyBot()
+            else:
+                bot = None
+
+            if bot:
+                resp = get_anthropic_client().messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=200,
+                    system=bot.system_prompt,
+                    messages=[{"role": "user", "content": switch_context}],
+                )
+                greeting_text = resp.content[0].text.strip()
+            else:
+                sally_switch_prompt = (
+                    f"You are Sally from 100x. The user just switched to you from another AI assistant via SMS. "
+                    f"Here's what they discussed:\n\n{conversation_summary}\n\n"
+                    f"Write a brief, warm greeting (2 sentences max) that acknowledges you have context "
+                    f"and asks a natural follow-up question based on what they shared. "
+                    f"Sound like a friend, not a robot. Keep it short for SMS."
+                )
+                resp = get_anthropic_client().messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=150,
+                    messages=[{"role": "user", "content": sally_switch_prompt}],
+                )
+                greeting_text = resp.content[0].text.strip()
+        except Exception as e:
+            logger.error(f"[SMS Switch] Greeting generation failed: {e}")
+            greeting_text = f"Hey, I'm {target_display}. I've got context from your chat — let's continue."
+
+        # Save greeting to DB
+        greeting_msg = DBMessage(
+            id=str(uuid.uuid4()),
+            session_id=new_session_id,
+            role="assistant",
+            content=greeting_text,
+            timestamp=time.time(),
+            phase=initial_phase,
+        )
+        db.add(greeting_msg)
+        db.commit()
+
+        # Send via Twilio REST API
+        send_sms(phone, f"Switched to {target_display}.\n\n{greeting_text}")
+        logger.info(f"[SMS Switch] Greeting sent for session {new_session_id}")
+
+    except Exception as e:
+        logger.error(f"[SMS Switch] Async greeting error: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            send_sms(phone, f"Switched to {target_display}. How can I help?")
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 # --- Active Message Processing ---
 
 def _handle_active_message(session: DBSession, message: str, db: DBSessionType) -> Response:
     """
-    Process a message during an active SMS conversation.
-    Reuses the same bot routing logic as the web chat endpoint.
+    Accept user message, save to DB, then process bot response asynchronously.
+
+    Returns an empty TwiML immediately (within ~100ms) to avoid Twilio's
+    15-second webhook timeout. The actual bot reply is sent via Twilio REST API
+    in a background thread.
     """
     now = time.time()
     session_id = session.id
-    arm = BotArm(session.assigned_arm) if session.assigned_arm else BotArm.SALLY_NEPQ
-    is_sally = arm == BotArm.SALLY_NEPQ
-
     current_phase_str = session.current_phase
-    current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
 
-    # Detect return-after-gap for resumption context
-    last_msg = (
-        db.query(DBMessage)
-        .filter(DBMessage.session_id == session_id)
-        .order_by(DBMessage.timestamp.desc())
-        .first()
-    )
-    gap_seconds = now - last_msg.timestamp if last_msg else 0
-    gap_hours = gap_seconds / 3600
-
-    resumption_context = ""
-    if gap_hours >= 1:
-        gap_str = f"{int(gap_hours)} hours" if gap_hours < 48 else f"{int(gap_hours / 24)} days"
-        resumption_context = (
-            f"\n\n[SYSTEM NOTE: The user is returning after {gap_str} of silence. "
-            f"They were previously in the {current_phase_str} phase. "
-            f"Acknowledge the gap naturally (e.g., 'hey, good to hear from you again') "
-            f"and continue where you left off. Do NOT restart the conversation from scratch. "
-            f"Reference what you were discussing before.]"
-        )
-        logger.info(f"[SMS:{session_id}] User returning after {gap_str} gap")
-
-    # Load memory context
-    memory_block = ""
-    if session.visitor_id or getattr(session, 'user_id', None):
-        try:
-            visitor_memory = load_visitor_memory(
-                db, session.visitor_id or "", user_id=getattr(session, 'user_id', None)
-            )
-            memory_block = format_memory_for_prompt(visitor_memory)
-        except Exception as e:
-            logger.error(f"[SMS:{session_id}] Memory load failed: {e}")
-            db.rollback()
-            session = db.query(DBSession).filter(DBSession.id == session_id).first()
-
-    # Check for _switch_context in prospect profile (one-time injection after bot switch)
-    try:
-        profile_data = json.loads(session.prospect_profile or "{}")
-        switch_ctx = profile_data.pop("_switch_context", None)
-        if switch_ctx:
-            switch_block = "[PRIOR CONVERSATION CONTEXT:\n" + switch_ctx + "]"
-            memory_block = (memory_block + "\n\n" + switch_block) if memory_block else switch_block
-            # Remove _switch_context so it only fires once
-            session.prospect_profile = json.dumps(profile_data)
-    except (json.JSONDecodeError, Exception):
-        pass
-
-    # Combine memory + resumption context
-    full_context = memory_block
-    if resumption_context:
-        full_context = (memory_block + resumption_context) if memory_block else resumption_context
-
-    # Save user message
+    # Save user message immediately (fast DB write)
     user_msg = DBMessage(
         id=str(uuid.uuid4()),
         session_id=session_id,
         role="user",
         content=message,
         timestamp=now,
-        phase=current_phase.value if current_phase else current_phase_str,
+        phase=current_phase_str,
     )
     db.add(user_msg)
     session.message_count += 1
     session.turn_number += 1
+    db.commit()
 
-    # Build conversation history
-    messages = (
-        db.query(DBMessage)
-        .filter(DBMessage.session_id == session_id)
-        .order_by(DBMessage.timestamp)
-        .all()
+    # Capture all values needed by background thread (avoid DetachedInstanceError)
+    thread_args = dict(
+        session_id=session_id,
+        phone=session.phone_number,
+        message=message,
+        visitor_id=session.visitor_id,
+        user_id=getattr(session, 'user_id', None),
+        assigned_arm=session.assigned_arm,
+        current_phase_str=current_phase_str,
+        prospect_profile=session.prospect_profile or "{}",
+        start_time=session.start_time,
+        retry_count=session.retry_count,
+        turn_number=session.turn_number,
+        thought_logs=session.thought_logs,
+        consecutive_no_new_info=getattr(session, 'consecutive_no_new_info', 0) or 0,
+        turns_in_current_phase=getattr(session, 'turns_in_current_phase', 0) or 0,
+        deepest_emotional_depth=getattr(session, 'deepest_emotional_depth', 'surface') or 'surface',
+        objection_diffusion_step=getattr(session, 'objection_diffusion_step', 0) or 0,
+        ownership_substep=getattr(session, 'ownership_substep', 0) or 0,
+        msg_timestamp=now,
     )
-    conversation_history = [
-        {"role": m.role, "content": m.content}
-        for m in messages
-    ]
-    conversation_history.append({"role": "user", "content": message})
 
-    # Route through bot engine
-    logger.info(f"[SMS:{session_id}] Turn {session.turn_number} in {current_phase_str} (arm={arm.value})")
+    threading.Thread(
+        target=_process_and_reply_async,
+        kwargs=thread_args,
+        daemon=True,
+    ).start()
 
+    logger.info(f"[SMS:{session_id}] Accepted message, processing async")
+    return _empty_twiml()
+
+
+def _send_sms_segments(phone: str, text: str):
+    """Send a message via Twilio REST API, splitting long texts into segments."""
+    segments = _split_sms(text)
+    for segment in segments:
+        send_sms(phone, segment)
+
+
+def _process_and_reply_async(
+    session_id, phone, message, visitor_id, user_id,
+    assigned_arm, current_phase_str, prospect_profile,
+    start_time, retry_count, turn_number, thought_logs,
+    consecutive_no_new_info, turns_in_current_phase,
+    deepest_emotional_depth, objection_diffusion_step,
+    ownership_substep, msg_timestamp,
+):
+    """Background thread: generate bot response and send via Twilio REST API."""
+    SessionLocal = _get_session_local()
+    db = SessionLocal()
     try:
-        result = route_message(
-            arm=arm,
-            user_message=message,
-            conversation_history=conversation_history,
-            memory_context=full_context,
-            current_phase=current_phase or NepqPhase.CONNECTION,
-            profile_json=session.prospect_profile or "{}",
-            retry_count=session.retry_count,
-            turn_number=session.turn_number,
-            conversation_start_time=session.start_time,
-            consecutive_no_new_info=getattr(session, 'consecutive_no_new_info', 0) or 0,
-            turns_in_current_phase=getattr(session, 'turns_in_current_phase', 0) or 0,
-            deepest_emotional_depth=getattr(session, 'deepest_emotional_depth', 'surface') or 'surface',
-            objection_diffusion_step=getattr(session, 'objection_diffusion_step', 0) or 0,
-            ownership_substep=getattr(session, 'ownership_substep', 0) or 0,
+        session = db.query(DBSession).filter(DBSession.id == session_id).first()
+        if not session:
+            logger.error(f"[SMS:{session_id}] Session not found in async worker")
+            return
+
+        arm = BotArm(assigned_arm) if assigned_arm else BotArm.SALLY_NEPQ
+        is_sally = arm == BotArm.SALLY_NEPQ
+        current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
+
+        # Detect return-after-gap for resumption context
+        last_msg = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == session_id, DBMessage.role == "assistant")
+            .order_by(DBMessage.timestamp.desc())
+            .first()
         )
-    except Exception as e:
-        logger.error(f"[SMS:{session_id}] Engine error: {e}")
-        result = {
-            "response_text": "Could you tell me more about that?",
-            "new_phase": current_phase_str,
-            "new_profile_json": session.prospect_profile or "{}",
-            "thought_log_json": "{}",
-            "phase_changed": False,
-            "session_ended": False,
-            "retry_count": session.retry_count + 1,
-            "consecutive_no_new_info": 0,
-            "turns_in_current_phase": 0,
-            "deepest_emotional_depth": "surface",
-            "objection_diffusion_step": 0,
-            "ownership_substep": 0,
-        }
+        gap_seconds = msg_timestamp - last_msg.timestamp if last_msg else 0
+        gap_hours = gap_seconds / 3600
 
-    # Update session state
-    new_phase_str = result["new_phase"]
-    session.current_phase = new_phase_str
+        resumption_context = ""
+        if gap_hours >= 1:
+            gap_str = f"{int(gap_hours)} hours" if gap_hours < 48 else f"{int(gap_hours / 24)} days"
+            resumption_context = (
+                f"\n\n[SYSTEM NOTE: The user is returning after {gap_str} of silence. "
+                f"They were previously in the {current_phase_str} phase. "
+                f"Acknowledge the gap naturally (e.g., 'hey, good to hear from you again') "
+                f"and continue where you left off. Do NOT restart the conversation from scratch. "
+                f"Reference what you were discussing before.]"
+            )
+            logger.info(f"[SMS:{session_id}] User returning after {gap_str} gap")
 
-    if is_sally:
-        session.retry_count = result["retry_count"]
-        session.prospect_profile = result["new_profile_json"]
-        if hasattr(session, 'consecutive_no_new_info'):
-            session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
-        if hasattr(session, 'turns_in_current_phase'):
-            session.turns_in_current_phase = result.get("turns_in_current_phase", 0)
-        if hasattr(session, 'deepest_emotional_depth'):
-            session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
-        if hasattr(session, 'objection_diffusion_step'):
-            session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
-        if hasattr(session, 'ownership_substep'):
-            session.ownership_substep = result.get("ownership_substep", 0)
+        # Load memory context
+        memory_block = ""
+        if visitor_id or user_id:
+            try:
+                visitor_memory = load_visitor_memory(
+                    db, visitor_id or "", user_id=user_id
+                )
+                memory_block = format_memory_for_prompt(visitor_memory)
+            except Exception as e:
+                logger.error(f"[SMS:{session_id}] Memory load failed: {e}")
+                db.rollback()
+                session = db.query(DBSession).filter(DBSession.id == session_id).first()
 
-        # Thought logs
+        # Check for _switch_context in prospect profile (one-time injection after bot switch)
         try:
-            existing_logs = json.loads(session.thought_logs or "[]")
-            new_log = json.loads(result["thought_log_json"])
-            existing_logs.append(new_log)
-            session.thought_logs = json.dumps(existing_logs)
+            profile_data = json.loads(session.prospect_profile or "{}")
+            switch_ctx = profile_data.pop("_switch_context", None)
+            if switch_ctx:
+                switch_block = "[PRIOR CONVERSATION CONTEXT:\n" + switch_ctx + "]"
+                memory_block = (memory_block + "\n\n" + switch_block) if memory_block else switch_block
+                session.prospect_profile = json.dumps(profile_data)
         except (json.JSONDecodeError, Exception):
             pass
 
-    # Get the response text
-    response_text = result["response_text"]
+        # Combine memory + resumption context
+        full_context = memory_block
+        if resumption_context:
+            full_context = (memory_block + resumption_context) if memory_block else resumption_context
 
-    # Strip payment link placeholders (don't work well in SMS)
-    if "[PAYMENT_LINK]" in response_text:
-        response_text = response_text.replace("[PAYMENT_LINK]", "[link will be sent separately]")
+        # Build conversation history
+        messages = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == session_id)
+            .order_by(DBMessage.timestamp)
+            .all()
+        )
+        conversation_history = [
+            {"role": m.role, "content": m.content}
+            for m in messages
+        ]
 
-    # Check session end
-    if result["session_ended"]:
-        session.status = "completed"
-        session.end_time = time.time()
-        session.sms_state = "post_survey"
+        # Route through bot engine
+        logger.info(f"[SMS:{session_id}] Async: routing to {arm.value}, turn {turn_number}")
+        route_start = time.monotonic()
+
+        try:
+            result = route_message(
+                arm=arm,
+                user_message=message,
+                conversation_history=conversation_history,
+                memory_context=full_context,
+                current_phase=current_phase or NepqPhase.CONNECTION,
+                profile_json=session.prospect_profile or "{}",
+                retry_count=retry_count,
+                turn_number=turn_number,
+                conversation_start_time=start_time,
+                consecutive_no_new_info=consecutive_no_new_info,
+                turns_in_current_phase=turns_in_current_phase,
+                deepest_emotional_depth=deepest_emotional_depth,
+                objection_diffusion_step=objection_diffusion_step,
+                ownership_substep=ownership_substep,
+            )
+        except Exception as e:
+            logger.error(f"[SMS:{session_id}] Async engine error: {e}")
+            result = {
+                "response_text": "Sorry, I had a hiccup. Could you say that again?",
+                "new_phase": current_phase_str,
+                "new_profile_json": session.prospect_profile or "{}",
+                "thought_log_json": "{}",
+                "phase_changed": False,
+                "session_ended": False,
+                "retry_count": retry_count + 1,
+                "consecutive_no_new_info": 0,
+                "turns_in_current_phase": 0,
+                "deepest_emotional_depth": "surface",
+                "objection_diffusion_step": 0,
+                "ownership_substep": 0,
+            }
+
+        route_ms = (time.monotonic() - route_start) * 1000
+        logger.info(f"[SMS:{session_id}] route_message completed in {route_ms:.0f}ms")
+
+        # Update session state
+        new_phase_str = result["new_phase"]
+        session.current_phase = new_phase_str
+
+        if is_sally:
+            session.retry_count = result["retry_count"]
+            session.prospect_profile = result["new_profile_json"]
+            if hasattr(session, 'consecutive_no_new_info'):
+                session.consecutive_no_new_info = result.get("consecutive_no_new_info", 0)
+            if hasattr(session, 'turns_in_current_phase'):
+                session.turns_in_current_phase = result.get("turns_in_current_phase", 0)
+            if hasattr(session, 'deepest_emotional_depth'):
+                session.deepest_emotional_depth = result.get("deepest_emotional_depth", "surface")
+            if hasattr(session, 'objection_diffusion_step'):
+                session.objection_diffusion_step = result.get("objection_diffusion_step", 0)
+            if hasattr(session, 'ownership_substep'):
+                session.ownership_substep = result.get("ownership_substep", 0)
+
+            # Thought logs
+            try:
+                existing_logs = json.loads(session.thought_logs or "[]")
+                new_log = json.loads(result["thought_log_json"])
+                existing_logs.append(new_log)
+                session.thought_logs = json.dumps(existing_logs)
+            except (json.JSONDecodeError, Exception):
+                pass
+
+        # Get the response text
+        response_text = result["response_text"]
+
+        # Strip payment link placeholders (don't work well in SMS)
+        if "[PAYMENT_LINK]" in response_text:
+            response_text = response_text.replace("[PAYMENT_LINK]", "[link will be sent separately]")
+
+        # Check session end
+        if result["session_ended"]:
+            session.status = "completed"
+            session.end_time = time.time()
+            session.sms_state = "post_survey"
+
+            # Save bot response
+            bot_msg = DBMessage(
+                id=str(uuid.uuid4()),
+                session_id=session_id,
+                role="assistant",
+                content=response_text,
+                timestamp=time.time(),
+                phase=new_phase_str,
+            )
+            db.add(bot_msg)
+            session.message_count += 1
+            db.commit()
+
+            # Send final bot message + post survey via REST API
+            _send_sms_segments(phone, f"{response_text}\n\n---\n\n{POST_SURVEY_MSG}")
+
+            # Trigger memory extraction in background
+            _trigger_memory_extraction(session, messages, message, result, new_phase_str)
+            return
 
         # Save bot response
         bot_msg = DBMessage(
@@ -649,26 +778,23 @@ def _handle_active_message(session: DBSession, message: str, db: DBSessionType) 
         session.message_count += 1
         db.commit()
 
-        # Trigger memory extraction in background
-        _trigger_memory_extraction(session, messages, message, result, new_phase_str)
+        # Send response via Twilio REST API
+        success = send_sms(phone, response_text)
+        logger.info(f"[SMS:{session_id}] Async reply sent via REST API (success={success})")
 
-        # Send final bot message + post survey
-        return twiml_reply(f"{response_text}\n\n---\n\n{POST_SURVEY_MSG}")
-
-    # Save bot response
-    bot_msg = DBMessage(
-        id=str(uuid.uuid4()),
-        session_id=session_id,
-        role="assistant",
-        content=response_text,
-        timestamp=time.time(),
-        phase=new_phase_str,
-    )
-    db.add(bot_msg)
-    session.message_count += 1
-    db.commit()
-
-    return twiml_reply(response_text)
+    except Exception as e:
+        logger.error(f"[SMS:{session_id}] Async worker error: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Send fallback so user isn't left hanging
+        try:
+            send_sms(phone, "Sorry, I ran into an issue. Could you try sending that again?")
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 def _trigger_memory_extraction(session, messages, user_message, result, new_phase_str):
@@ -708,3 +834,19 @@ def _trigger_memory_extraction(session, messages, user_message, result, new_phas
         threading.Thread(target=_run, daemon=True).start()
     except Exception as e:
         logger.error(f"[SMS:{session.id}] Memory extraction thread launch failed: {e}")
+
+
+# --- Health Check ---
+
+@router.get("/api/sms/health")
+async def sms_health():
+    """Quick health check for SMS subsystem — verifies required env vars are set."""
+    import os
+    checks = {
+        "twilio_sid_set": bool(os.getenv("TWILIO_ACCOUNT_SID")),
+        "twilio_token_set": bool(os.getenv("TWILIO_AUTH_TOKEN")),
+        "twilio_phone_set": bool(os.getenv("TWILIO_PHONE_NUMBER")),
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+    }
+    all_ok = all(checks.values())
+    return {"status": "ok" if all_ok else "missing_config", "checks": checks}
