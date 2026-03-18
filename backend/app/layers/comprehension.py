@@ -247,7 +247,7 @@ def run_comprehension(
             response = model.generate_content(
                 user_prompt,
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=1500,
+                    max_output_tokens=800,
                     temperature=0.1,
                 ),
                 safety_settings=[
@@ -283,7 +283,7 @@ def run_comprehension(
             retry_response = model.generate_content(
                 user_prompt,
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=1500,
+                    max_output_tokens=800,
                     temperature=0.1,
                 ),
                 safety_settings=[

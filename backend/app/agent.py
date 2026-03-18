@@ -19,14 +19,37 @@ from app.models import (
     DecisionOutput,
     ThoughtLog,
     ProspectProfile,
+    PhaseExitEvaluation,
+    CriterionResult,
     ObjectionType,
     UserIntent,
 )
 from app.layers.comprehension import run_comprehension
 from app.layers.decision import make_decision, detect_situation
 from app.layers.response import generate_response
+from app.phase_definitions import get_exit_criteria_checklist
 
 logger = logging.getLogger("sally.engine")
+
+# Trivial messages that can skip Layer 1 (Gemini) entirely
+TRIVIAL_MESSAGES = {
+    "hi", "hey", "hello", "ok", "yes", "no", "sure", "yeah", "yep",
+    "nah", "nope", "yo", "sup", "thanks", "thank you", "bye", "goodbye",
+}
+
+# Trivial messages that indicate agreement
+_AGREEMENT_TRIVIALS = {"ok", "yes", "sure", "yeah", "yep"}
+
+def _is_trivial(msg: str) -> bool:
+    return msg.strip().lower().rstrip("!.?") in TRIVIAL_MESSAGES
+
+def _trivial_intent(msg: str) -> UserIntent:
+    normalized = msg.strip().lower().rstrip("!.?")
+    if normalized in _AGREEMENT_TRIVIALS:
+        return UserIntent.AGREEMENT
+    if normalized in {"bye", "goodbye"}:
+        return UserIntent.DIRECT_ANSWER
+    return UserIntent.SMALL_TALK
 
 
 class SallyEngine:
@@ -134,16 +157,48 @@ class SallyEngine:
 
         # Layer 1: Comprehension
         turn_start = time.monotonic()
-        logger.info(f"[Turn {turn_number}] Layer 1: Analyzing message in {current_phase.value}")
-        l1_start = time.monotonic()
-        comprehension = run_comprehension(
-            current_phase=current_phase,
-            user_message=user_message,
-            conversation_history=conversation_history,
-            prospect_profile=profile,
-            memory_context=memory_context,
-        )
-        l1_ms = (time.monotonic() - l1_start) * 1000
+
+        # Fast-path: skip Layer 1 (Gemini) for trivial messages to reduce latency
+        if _is_trivial(user_message):
+            logger.info(f"[Turn {turn_number}] FAST PATH: Trivial message detected, skipping Layer 1")
+            checklist = get_exit_criteria_checklist(current_phase)
+            default_criteria = {
+                cid: CriterionResult(met=False, evidence=None)
+                for cid in checklist
+            }
+            comprehension = ComprehensionOutput(
+                user_intent=_trivial_intent(user_message),
+                emotional_tone="neutral",
+                emotional_intensity="low",
+                objection_type=ObjectionType.NONE,
+                objection_detail=None,
+                profile_updates={},
+                exit_evaluation=PhaseExitEvaluation(
+                    criteria=default_criteria,
+                    reasoning="Trivial message — fast path",
+                    missing_info=[],
+                ),
+                response_richness="thin",
+                emotional_depth="surface",
+                prospect_exact_words=[],
+                emotional_cues=[],
+                energy_level="neutral",
+                new_information=False,
+                objection_diffusion_status="not_applicable",
+                summary=f"Trivial message: {user_message}",
+            )
+            l1_ms = 0.0
+        else:
+            logger.info(f"[Turn {turn_number}] Layer 1: Analyzing message in {current_phase.value}")
+            l1_start = time.monotonic()
+            comprehension = run_comprehension(
+                current_phase=current_phase,
+                user_message=user_message,
+                conversation_history=conversation_history,
+                prospect_profile=profile,
+                memory_context=memory_context,
+            )
+            l1_ms = (time.monotonic() - l1_start) * 1000
         logger.info(f"[Turn {turn_number}] Layer 1 result ({l1_ms:.0f}ms): intent={comprehension.user_intent}, "
                      f"objection={comprehension.objection_type}, "
                      f"criteria={comprehension.exit_evaluation.criteria_met_count}/{comprehension.exit_evaluation.criteria_total_count}, "

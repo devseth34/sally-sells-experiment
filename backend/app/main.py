@@ -904,6 +904,18 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             # Re-fetch db_session since rollback expires all loaded objects
             db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
 
+    # Check for _switch_context in prospect profile (one-time injection after bot switch)
+    try:
+        profile_data = json.loads(db_session.prospect_profile or "{}")
+        switch_ctx = profile_data.pop("_switch_context", None)
+        if switch_ctx:
+            switch_block = "[PRIOR CONVERSATION CONTEXT:\n" + switch_ctx + "]"
+            memory_block = (memory_block + "\n\n" + switch_block) if memory_block else switch_block
+            # Remove _switch_context so it only fires once
+            db_session.prospect_profile = json.dumps(profile_data)
+    except (json.JSONDecodeError, Exception):
+        pass
+
     # Save user message
     user_msg_id = str(uuid.uuid4())
     user_msg = DBMessage(
@@ -1904,6 +1916,14 @@ def switch_bot(
     visitor_id = db_session.visitor_id
     user_id = current_user.id if current_user else getattr(db_session, 'user_id', None)
 
+    # Inject switch context into prospect profile for Sally to read on first turn
+    try:
+        profile_data = json.loads(profile_json) if profile_json and profile_json != "{}" else {}
+    except (json.JSONDecodeError, Exception):
+        profile_data = {}
+    profile_data["_switch_context"] = conversation_summary
+    enriched_profile_json = json.dumps(profile_data)
+
     new_db_session = DBSession(
         id=new_session_id,
         status="active",
@@ -1920,7 +1940,7 @@ def switch_bot(
         message_count=1,
         retry_count=0,
         turn_number=0,
-        prospect_profile=profile_json,  # Carry forward the prospect profile
+        prospect_profile=enriched_profile_json,
         thought_logs="[]",
     )
     db.add(new_db_session)
@@ -1958,11 +1978,20 @@ def switch_bot(
             )
             greeting_text = response.content[0].text.strip()
         else:
-            # For Sally: simpler greeting since the engine will handle context
-            greeting_text = (
-                "Hey, I'm Sally. I can see what you've been discussing — "
-                "let me pick up from here. What's on your mind?"
+            # For Sally: generate a contextual greeting using the conversation summary
+            sally_switch_prompt = (
+                f"You are Sally from 100x. The user just switched to you from another AI assistant. "
+                f"Here's what they discussed:\n\n{conversation_summary}\n\n"
+                f"Write a brief, warm greeting (2 sentences max) that acknowledges you have context "
+                f"and asks a natural follow-up question based on what they shared. "
+                f"Sound like a friend, not a robot."
             )
+            response = get_anthropic_client().messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=150,
+                messages=[{"role": "user", "content": sally_switch_prompt}],
+            )
+            greeting_text = response.content[0].text.strip()
     except Exception as e:
         logger.error(f"[Switch] Failed to generate contextual greeting: {e}")
         greeting_text = f"Hey, I'm {BOT_DISPLAY_NAMES[new_arm]}. I've got context from your previous chat — let's continue."

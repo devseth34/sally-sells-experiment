@@ -455,8 +455,15 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
                         logger.warning("Circuit breaker: fragment echo stripped, keeping question only")
                 break
 
-    # Check 5: Pitching before Consequence
-    if target_phase in EARLY_PHASES:
+    # Check 5: Pitching before Consequence (skip if user is asking about Sally's identity)
+    identity_keywords = [
+        "your name", "who are you", "who is this", "what company",
+        "where are you from", "who am i talking to", "what's your name",
+        "whats your name", "who r u", "introduce yourself",
+    ]
+    is_identity_question = any(kw in (last_user_message or "").lower() for kw in identity_keywords)
+
+    if target_phase in EARLY_PHASES and not is_identity_question:
         pitch_signals = ["$10,000", "discovery workshop", "nik shah", "100x"]
         for signal in pitch_signals:
             if signal in text_lower:

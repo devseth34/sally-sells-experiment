@@ -11,6 +11,7 @@ SMS State Machine:
 - done: conversation complete
 """
 
+import hashlib
 import logging
 import random
 import time
@@ -33,6 +34,11 @@ import threading
 logger = logging.getLogger("sally.sms")
 
 router = APIRouter()
+
+
+def _phone_to_visitor_id(phone: str) -> str:
+    """Generate a deterministic visitor_id from a phone number."""
+    return "sms_" + hashlib.sha256(phone.encode()).hexdigest()[:16]
 
 
 # --- TwiML Helpers ---
@@ -206,6 +212,14 @@ async def sms_webhook(
         conversation_summary = "\n".join(summary_lines)
         profile_json = session.prospect_profile or "{}"
 
+        # Inject switch context into prospect profile for Sally to read on first turn
+        try:
+            profile_data = json.loads(profile_json) if profile_json and profile_json != "{}" else {}
+        except (json.JSONDecodeError, Exception):
+            profile_data = {}
+        profile_data["_switch_context"] = conversation_summary
+        enriched_profile_json = json.dumps(profile_data)
+
         # End current session
         session.status = "switched"
         session.end_time = time.time()
@@ -222,7 +236,7 @@ async def sms_webhook(
             current_phase=initial_phase,
             pre_conviction=session.pre_conviction,
             assigned_arm=target_arm.value,
-            visitor_id=session.visitor_id,
+            visitor_id=session.visitor_id or _phone_to_visitor_id(phone),
             user_id=getattr(session, 'user_id', None),
             phone_number=phone,
             channel="sms",
@@ -232,7 +246,7 @@ async def sms_webhook(
             message_count=1,
             retry_count=0,
             turn_number=0,
-            prospect_profile=profile_json,
+            prospect_profile=enriched_profile_json,
             thought_logs="[]",
         )
         db.add(new_session)
@@ -265,7 +279,20 @@ async def sms_webhook(
                 )
                 greeting_text = resp.content[0].text.strip()
             else:
-                greeting_text = "Hey, I'm Sally. I've got the context from your previous chat — let me pick up from here. What were you thinking about?"
+                # For Sally: generate a contextual greeting using the conversation summary
+                sally_switch_prompt = (
+                    f"You are Sally from 100x. The user just switched to you from another AI assistant via SMS. "
+                    f"Here's what they discussed:\n\n{conversation_summary}\n\n"
+                    f"Write a brief, warm greeting (2 sentences max) that acknowledges you have context "
+                    f"and asks a natural follow-up question based on what they shared. "
+                    f"Sound like a friend, not a robot. Keep it short for SMS."
+                )
+                resp = get_anthropic_client().messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=150,
+                    messages=[{"role": "user", "content": sally_switch_prompt}],
+                )
+                greeting_text = resp.content[0].text.strip()
         except Exception as e:
             logger.error(f"[SMS Switch] Greeting generation failed: {e}")
             greeting_text = f"Hey, I'm {BOT_DISPLAY_NAMES[target_arm]}. I've got context from your chat — let's continue."
@@ -338,6 +365,7 @@ async def sms_webhook(
         session_id = str(uuid.uuid4())[:8].upper()
         now = time.time()
 
+        visitor_id = _phone_to_visitor_id(phone)
         session = DBSession(
             id=session_id,
             status="active",
@@ -346,6 +374,7 @@ async def sms_webhook(
             channel="sms",
             sms_state="pre_survey",
             experiment_mode="true",  # SMS sessions are always experiment mode
+            visitor_id=visitor_id,
             start_time=now,
             message_count=0,
             retry_count=0,
@@ -486,6 +515,18 @@ def _handle_active_message(session: DBSession, message: str, db: DBSessionType) 
             logger.error(f"[SMS:{session_id}] Memory load failed: {e}")
             db.rollback()
             session = db.query(DBSession).filter(DBSession.id == session_id).first()
+
+    # Check for _switch_context in prospect profile (one-time injection after bot switch)
+    try:
+        profile_data = json.loads(session.prospect_profile or "{}")
+        switch_ctx = profile_data.pop("_switch_context", None)
+        if switch_ctx:
+            switch_block = "[PRIOR CONVERSATION CONTEXT:\n" + switch_ctx + "]"
+            memory_block = (memory_block + "\n\n" + switch_block) if memory_block else switch_block
+            # Remove _switch_context so it only fires once
+            session.prospect_profile = json.dumps(profile_data)
+    except (json.JSONDecodeError, Exception):
+        pass
 
     # Combine memory + resumption context
     full_context = memory_block
