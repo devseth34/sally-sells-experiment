@@ -61,9 +61,9 @@ class ControlBot:
         elif turn_count <= 6:
             context += "\n- PACING: Mid conversation. You should have enough context to be specific and personalized."
         elif turn_count <= 12:
-            context += "\n- PACING: Late conversation. If you haven't discussed the workshop/price yet, it's time."
+            context += "\n- PACING: Late conversation. If you haven't shared the invitation link yet, it's time."
         else:
-            context += "\n- PACING: Extended conversation. Wrap up. Either close or offer the free alternative."
+            context += "\n- PACING: Extended conversation. Wrap up. Share the invitation link if you haven't, or close gracefully."
 
         return context
 

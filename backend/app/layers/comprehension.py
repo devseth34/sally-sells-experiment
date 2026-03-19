@@ -76,7 +76,7 @@ COMPREHENSION_OWNERSHIP_SECTION = """
 OWNERSHIP PHASE EXIT CRITERIA RULES:
 - commitment_question_asked: TRUE if Sally asked a "do you feel like..." commitment question. FALSE if she jumped straight to price.
 - prospect_self_persuaded: TRUE if the PROSPECT articulated at least one specific reason why they feel the solution could work. Must be prospect's own words, not just "yeah".
-- price_stated: TRUE if the $10,000 price has been explicitly mentioned.
+- opportunity_presented: TRUE if the 100x AI Academy and invitation process has been clearly presented.
 - definitive_response: TRUE if prospect gave a clear yes to paid, yes to free, or clear no. "Not sure" is NOT definitive.
 
 OBJECTION DIFFUSION STATUS (OWNERSHIP only):

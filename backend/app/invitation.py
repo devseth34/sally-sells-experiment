@@ -1,7 +1,7 @@
 """
 Invitation Link Utility
 
-Builds tracked invitation URLs for the 100x Academy AI Discovery Workshop.
+Builds tracked invitation URLs for the 100x AI Academy invitation page.
 Each link includes UTM parameters and session context so we can attribute
 signups back to the specific bot arm, channel, and conversation.
 """

@@ -325,28 +325,28 @@ def make_decision(
 
     # 6b. OWNERSHIP substep enforcement — prevent looping within OWNERSHIP sub-states
     if current_phase == NepqPhase.OWNERSHIP:
-        # Force advance to COMMITMENT when prospect agrees after price presentation
+        # Force advance to COMMITMENT when prospect agrees after opportunity presented
         if ownership_substep >= 4:
-            price_met = exit_eval.criteria.get("price_stated")
-            if price_met and price_met.met:
+            opp_met = exit_eval.criteria.get("opportunity_presented")
+            if opp_met and opp_met.met:
                 if comprehension.user_intent == UserIntent.AGREEMENT:
                     next_phase = get_next_phase(current_phase)
                     return DecisionOutput(
                         action="ADVANCE",
                         target_phase=next_phase.value,
-                        reason="Prospect agreed after price stated. Advancing to COMMITMENT.",
+                        reason="Prospect agreed after opportunity presented. Advancing to COMMITMENT.",
                         retry_count=0,
                     )
 
-        # Force price presentation if stuck at substep 4 for too long
+        # Force opportunity presentation if stuck at substep 4 for too long
         if ownership_substep == 4 and turns_in_current_phase >= 3:
-            ps = exit_eval.criteria.get("price_stated")
-            if ps and not ps.met:
+            opp = exit_eval.criteria.get("opportunity_presented")
+            if opp and not opp.met:
                 return DecisionOutput(
                     action="PROBE",
                     target_phase=current_phase.value,
-                    reason=f"Ownership substep 4 (PRESENT OFFER) but price not stated after {turns_in_current_phase} turns. Forcing price presentation.",
-                    probe_target="price_stated",
+                    reason=f"Ownership substep 4 (PRESENT OPPORTUNITY) but not presented after {turns_in_current_phase} turns. Forcing presentation.",
+                    probe_target="opportunity_presented",
                     retry_count=retry_count,
                 )
 
@@ -363,7 +363,7 @@ def make_decision(
                         reason=f"OWNERSHIP hard ceiling + prospect agreed. Forcing advance to {next_phase.value}.",
                         retry_count=0,
                     )
-            # Otherwise offer free workshop
+            # Otherwise offer graceful alternative / invitation reminder
             return DecisionOutput(
                 action="STAY",
                 target_phase=current_phase.value,
@@ -384,23 +384,19 @@ def make_decision(
                     retry_count=retry_count,
                 )
 
-    # 6c. COMMITMENT: phone decline bypass — if phone refused, skip to link delivery
+    # 6c. COMMITMENT: if positive signal but link not yet sent, prompt link delivery
     if current_phase == NepqPhase.COMMITMENT and not all_criteria_met:
-        phone_crit = exit_eval.criteria.get("phone_collected")
-        email_crit = exit_eval.criteria.get("email_collected")
         positive_crit = exit_eval.criteria.get("positive_signal_or_hard_no")
         link_crit = exit_eval.criteria.get("link_sent")
 
-        # If we have email + positive signal but phone refused/not provided, skip phone → send link
-        if (email_crit and email_crit.met
-                and positive_crit and positive_crit.met
-                and phone_crit and not phone_crit.met
+        # If we have a positive signal but haven't sent the link yet, send it
+        if (positive_crit and positive_crit.met
                 and (not link_crit or not link_crit.met)
                 and consecutive_no_new_info >= 1):
             return DecisionOutput(
                 action="PROBE",
                 target_phase=current_phase.value,
-                reason=f"Phone declined or not provided. Skipping to link delivery. ({criteria_met}/{criteria_total} met: {criteria_status_str})",
+                reason=f"Positive signal received but link not sent. Prompting link delivery. ({criteria_met}/{criteria_total} met: {criteria_status_str})",
                 retry_count=retry_count,
                 probe_target="link_sent",
             )
@@ -564,7 +560,7 @@ def detect_situation(
 
     # 1.5: Price objection in COMMITMENT after objection handling already attempted
     # diffusion_step >= 2 means we already did consequence recall on first objection
-    # and the prospect STILL objects → now offer the free workshop
+    # and the prospect STILL objects → offer graceful alternative
     if (current_phase == NepqPhase.COMMITMENT
             and comprehension.objection_type == ObjectionType.PRICE
             and objection_diffusion_step >= 2):

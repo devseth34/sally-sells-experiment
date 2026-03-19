@@ -262,17 +262,12 @@ class SallyEngine:
                     sp.met = True
                     sp.evidence = "Latched: prospect self-persuaded in a prior turn"
             if ownership_substep >= 5:
-                ps = exit_eval.criteria.get("price_stated")
+                ps = exit_eval.criteria.get("opportunity_presented")
                 if ps and not ps.met:
                     ps.met = True
-                    ps.evidence = "Latched: price was stated in a prior turn"
+                    ps.evidence = "Latched: opportunity was presented in a prior turn"
 
-        if current_phase == NepqPhase.COMMITMENT:
-            if profile.email:
-                ec = exit_eval.criteria.get("email_collected")
-                if ec and not ec.met:
-                    ec.met = True
-                    ec.evidence = f"Latched: email already in profile ({profile.email})"
+        # COMMITMENT latch: no contact collection needed (invitation page handles it)
 
         # === OWNERSHIP SUBSTEP TRACKING (runs AFTER latch) ===
         if current_phase == NepqPhase.OWNERSHIP:
@@ -280,7 +275,7 @@ class SallyEngine:
 
             commitment_asked = exit_eval.criteria.get("commitment_question_asked")
             self_persuaded = exit_eval.criteria.get("prospect_self_persuaded")
-            price_stated = exit_eval.criteria.get("price_stated")
+            price_stated = exit_eval.criteria.get("opportunity_presented")
             definitive_response = exit_eval.criteria.get("definitive_response")
 
             # Initialize: 0 → 1 on first OWNERSHIP turn
@@ -305,7 +300,7 @@ class SallyEngine:
             if original_substep == 3:
                 ownership_substep = 4
 
-            # 4 → 5 or 6: after price stated, based on response
+            # 4 → 5 or 6: after opportunity presented, based on response
             if ownership_substep == 4 and price_stated and price_stated.met:
                 if comprehension.objection_type != ObjectionType.NONE:
                     ownership_substep = 5  # Objection handling
@@ -360,17 +355,12 @@ class SallyEngine:
                     sp.met = True
                     sp.evidence = "Latched: prospect self-persuaded in a prior turn"
             if ownership_substep >= 5:
-                ps = exit_eval.criteria.get("price_stated")
+                ps = exit_eval.criteria.get("opportunity_presented")
                 if ps and not ps.met:
                     ps.met = True
-                    ps.evidence = "Latched: price was stated in a prior turn"
+                    ps.evidence = "Latched: opportunity was presented in a prior turn"
 
-        if current_phase == NepqPhase.COMMITMENT:
-            if profile.email:
-                ec = exit_eval.criteria.get("email_collected")
-                if ec and not ec.met:
-                    ec.met = True
-                    ec.evidence = f"Latched: email already in profile ({profile.email})"
+        # COMMITMENT latch: no contact collection needed (invitation page handles it)
         # Layer 2: Decision
         logger.info(f"[Turn {turn_number}] Layer 2: Making decision...")
         l2_start = time.monotonic()

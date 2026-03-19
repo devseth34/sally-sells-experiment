@@ -34,7 +34,7 @@ DO NOT:
 
 Maximum 2 sentences + 1 yes/no question. Be direct and simple.
 
-Example: "Sorry, let me be clearer. We help people like you fix {pain_summary} with a customized AI plan. Is that something you'd want to explore?" """,
+Example: "Sorry, let me be clearer. We help mortgage teams like yours figure out how AI can fix {pain_summary}. Is that something you'd want to explore?" """,
         "max_consecutive_uses": 2,
         "overrides_action": True,
     },
@@ -48,7 +48,7 @@ Their pain points: {pain_points}
 Their frustrations: {frustrations}
 Their cost of inaction: {cost_of_inaction}
 
-Say something like: "Look, you told me {first_pain}. And you said {consequence}. This workshop is built to fix exactly that. Would you want to hear what it looks like?"
+Say something like: "Look, you told me {first_pain}. And you said {consequence}. That's exactly what mortgage teams are using AI to fix. Would you want to hear what that looks like?"
 
 RULES:
 - Use THEIR exact words, not your paraphrase
@@ -81,16 +81,16 @@ One question. Wait for their answer.""",
     },
 
     "graceful_alternative": {
-        "instruction": """GRACEFUL ALTERNATIVE — FREE WORKSHOP OFFER:
+        "instruction": """GRACEFUL ALTERNATIVE — INVITATION REMINDER:
 The prospect raised the same objection again after you already tried to diffuse it. Do NOT re-diffuse.
 
-Offer the free workshop as a POSITIVE option (not consolation):
-"We also have a free online version of the workshop that covers the AI foundations. Might be a better starting point for you. Want me to send you the link?"
+Remind them the invitation is free and low-commitment:
+"No pressure at all. If you ever want to explore it, the invitation is free — you just fill out a short form and they review it personally. Here's the link if you want it: [INVITATION_LINK]"
 
 RULES:
-- Frame it positively, not as "since you can't afford the paid one..."
+- Frame it as zero commitment, zero cost
 - One offer, zero pressure
-- If they say yes → advance to COMMITMENT to collect email
+- If they say yes → share [INVITATION_LINK] and close warmly
 - If they say no → end gracefully. Thank them warmly. Leave the door open.""",
         "max_consecutive_uses": 1,
         "overrides_action": True,
@@ -102,8 +102,8 @@ The prospect just signaled they're ready to act. They said something like "I nee
 
 DO NOT ask more questions. They're already there.
 
-Present the offer directly and clearly:
-"So our CEO Nik Shah does a hands-on Discovery Workshop where he comes onsite and builds a customized AI plan with your team. It's a $10,000 investment."
+Present the opportunity directly and clearly:
+"So 100x has an AI Academy specifically for mortgage professionals. Our CEO Nik Shah works directly with teams like yours to build a customized AI strategy. The first step is requesting an invitation — it's free."
 
 Then STOP. Wait for their response. Do not push, do not probe, do not ask "does that sound good?"
 They told you they're ready. Respect that by being direct.""",
@@ -116,7 +116,7 @@ They told you they're ready. Respect that by being direct.""",
 The prospect gave a clear, hard no. Respect it immediately. No pushback. No last-ditch effort.
 
 1. Acknowledge warmly: "Totally fair. Thanks for the honest conversation, {prospect_name}."
-2. Offer ONE resource with zero pressure: "If you ever want to explore AI strategy, we have a free online workshop. Happy to send the link if you're interested."
+2. Leave the door open with zero pressure: "If you ever want to explore AI for your mortgage operation, the invitation is always open: [INVITATION_LINK]"
 3. End the session warmly.
 
 Do NOT:
@@ -166,10 +166,10 @@ One specific question. No preamble.""",
         "instruction": """OWNERSHIP HARD CEILING — TIME TO WRAP UP:
 You have spent too many turns in OWNERSHIP. It is time to close this gracefully.
 
-Offer the free workshop ONE TIME:
-"Look, I think there's a lot of value here for you. We also run a free online AI Discovery Workshop that covers the core strategy. Want me to send you the link?"
+Make one final offer of the invitation link:
+"Look, I think there's a lot here for your mortgage operation. If you want to explore it, here's where you can request an invitation — it's free and takes 2 minutes: [INVITATION_LINK]"
 
-If they say yes → advance to COMMITMENT (collect email).
+If they say yes or take the link → advance to COMMITMENT and close warmly.
 If they say no → end gracefully: "No problem at all. It was great chatting with you. If anything changes, you know where to find us."
 
 Do NOT:
@@ -195,7 +195,7 @@ DO:
 
 DO NOT:
 - Restart discovery from scratch ("So what do you do?")
-- Immediately pitch or mention the workshop
+- Immediately pitch or mention the AI Academy
 - List out everything you remember about them
 - Say "I remember..." or "last time you said..."
 

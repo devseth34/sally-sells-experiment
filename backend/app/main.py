@@ -504,9 +504,9 @@ def _generate_memory_greeting(arm: BotArm, memory: dict, recent_context: str = "
             # Special case handling
             last_outcome = last_summary.get("outcome", "") if last_summary else ""
             if "price" in last_outcome.lower() or "objection" in last_outcome.lower():
-                prompt += "\nIMPORTANT: They had a price objection last time. Do NOT mention the workshop or price in your greeting. Focus on reconnecting as a person.\n"
-            elif "completed_free" in last_outcome.lower() or "free_workshop" in last_outcome.lower():
-                prompt += "\nThey completed the free workshop. You can ask how it went.\n"
+                prompt += "\nIMPORTANT: They had concerns last time. Do NOT mention the AI Academy in your greeting. Focus on reconnecting as a person.\n"
+            elif "completed" in last_outcome.lower() or "invitation" in last_outcome.lower():
+                prompt += "\nThey showed interest last time. You can ask how things have been going with AI exploration.\n"
             elif last_outcome and any(phase in last_outcome.lower() for phase in ["connection", "situation", "abandoned"]):
                 prompt += "\nThey left early last time. Keep the greeting light and casual — no pressure.\n"
 
@@ -554,8 +554,8 @@ def _generate_memory_greeting(arm: BotArm, memory: dict, recent_context: str = "
         # Enhanced Ivy templates with context awareness
         last_outcome = last_summary.get("outcome", "") if last_summary else ""
         if name and last_outcome:
-            if "free" in last_outcome.lower():
-                return f"Hi {name}. Welcome back. Last time you opted for the free workshop. I can provide more information about it or answer any new questions."
+            if "invitation" in last_outcome.lower() or "completed" in last_outcome.lower():
+                return f"Hi {name}. Welcome back. Last time you were exploring AI for your mortgage operation. I can provide more information or answer any new questions."
             elif last_outcome in ("abandoned_late", "abandoned_mid"):
                 return f"Hi {name}. Good to see you again. I have context from our previous discussion. What information would be helpful today?"
             else:
@@ -1231,14 +1231,12 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     mentions_sending_link = any(w in text_lower for w in ["send you", "here's the link", "booking link", "workshop link", "secure your spot", "link to"])
     is_free_context = any(w in text_lower for w in ["free workshop", "free online", "free version", "free ai", "no cost"])
 
-    # Step 3: If Sally promises a link but didn't include one, inject it
+    # Step 3: If bot promises a link but didn't include one, inject invitation link
     if is_closing_phase and mentions_sending_link and not has_any_link:
-        if is_free_context and tidycal_url:
-            response_text = response_text.rstrip() + f"\n\n{tidycal_url}"
-            logger.info(f"[Session {session_id}] Injected TidyCal link (LLM forgot to include it)")
-        elif stripe_fallback:
-            response_text = response_text.rstrip() + f"\n\n{stripe_fallback}"
-            logger.info(f"[Session {session_id}] Injected Stripe link (LLM forgot to include it)")
+        # Default to invitation link (primary CTA)
+        if "[INVITATION_LINK]" not in response_text:
+            response_text = response_text.rstrip() + "\n\n[INVITATION_LINK]"
+            logger.info(f"[Session {session_id}] Injected [INVITATION_LINK] placeholder (LLM forgot to include it)")
 
     # Step 4: Ensure TidyCal URL is correct (LLM might write wrong tidycal path)
     if "tidycal.com" in text_lower and tidycal_url:

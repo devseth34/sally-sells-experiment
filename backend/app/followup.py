@@ -386,8 +386,8 @@ def _process_session_followup(db, session: DBSession, now: float):
     if is_final_followup:
         followup_text += (
             "\n\nOne last question before I go — on a scale of 1-10, "
-            "how likely are you NOW to invest in a $10,000 AI program "
-            "for your business? Just reply with a number."
+            "how interested are you NOW in exploring AI for your "
+            "mortgage business? Just reply with a number."
         )
         # Transition to post_survey so the reply is captured as a score
         session.sms_state = "post_survey"

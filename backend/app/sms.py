@@ -113,14 +113,14 @@ def _find_active_sms_session(db: DBSessionType, phone: str) -> DBSession | None:
 
 PRE_SURVEY_MSG = (
     "Hey! Welcome to 100x. Before we chat, quick question:\n\n"
-    "On a scale of 1-10, how likely are you to invest in a $10,000 AI program "
-    "for your business today?\n\n"
+    "On a scale of 1-10, how interested are you in using AI to improve "
+    "your mortgage business?\n\n"
     "Reply with a number from 1 to 10."
 )
 
 POST_SURVEY_MSG = (
-    "One last question — after our chat, how likely are you NOW to invest in a "
-    "$10,000 AI program for your business?\n\n"
+    "One last question — after our chat, how interested are you NOW in "
+    "exploring AI for your mortgage business?\n\n"
     "Reply with a number from 1 to 10."
 )
 
