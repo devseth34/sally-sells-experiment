@@ -275,7 +275,7 @@ class SallyEngine:
 
             commitment_asked = exit_eval.criteria.get("commitment_question_asked")
             self_persuaded = exit_eval.criteria.get("prospect_self_persuaded")
-            price_stated = exit_eval.criteria.get("opportunity_presented")
+            opp_presented = exit_eval.criteria.get("opportunity_presented")
             definitive_response = exit_eval.criteria.get("definitive_response")
 
             # Initialize: 0 → 1 on first OWNERSHIP turn
@@ -301,7 +301,7 @@ class SallyEngine:
                 ownership_substep = 4
 
             # 4 → 5 or 6: after opportunity presented, based on response
-            if ownership_substep == 4 and price_stated and price_stated.met:
+            if ownership_substep == 4 and opp_presented and opp_presented.met:
                 if comprehension.objection_type != ObjectionType.NONE:
                     ownership_substep = 5  # Objection handling
                 elif comprehension.user_intent == UserIntent.AGREEMENT:
