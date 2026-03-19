@@ -467,3 +467,60 @@ export async function getCdsSummary(): Promise<CdsSummaryResponse> {
   if (!res.ok) throw new Error(`Failed to get CDS summary: ${res.statusText}`);
   return res.json();
 }
+
+// --- Admin Analytics ---
+
+export interface ArmStats {
+  total: number;
+  completed: number;
+  abandoned: number;
+  switched: number;
+  active: number;
+  has_cds: number;
+  mean_cds: number | null;
+  mean_pre: number | null;
+  mean_post: number | null;
+  avg_messages: number | null;
+  avg_turns: number | null;
+  completion_rate: number;
+}
+
+export interface AdminSession {
+  id: string;
+  arm: string;
+  channel: string;
+  status: string;
+  pre_conviction: number | null;
+  post_conviction: number | null;
+  cds_score: number | null;
+  message_count: number;
+  turn_number: number;
+  current_phase: string;
+  start_time: number;
+  end_time: number | null;
+  followup_count: number;
+}
+
+export interface AdminAnalyticsResponse {
+  experiment_status: string;
+  total_experiment_sessions: number;
+  total_with_cds: number;
+  target_sessions: number;
+  progress_pct: number;
+  arms: Record<string, ArmStats>;
+  sally_lift: Record<string, number>;
+  channels: Record<string, number>;
+  followups: {
+    sessions_with_followups: number;
+    avg_followups_per_session: number;
+    total_sent: number;
+  };
+  sally_phase_distribution: Record<string, number>;
+  recent_sessions: AdminSession[];
+}
+
+export async function getAdminAnalytics(): Promise<AdminAnalyticsResponse> {
+  const res = await fetch(`${API_BASE}/admin/analytics`);
+  if (!res.ok) throw new Error(`Failed to get admin analytics: ${res.statusText}`);
+  return res.json();
+}

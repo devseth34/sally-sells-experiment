@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSessionType
-from sqlalchemy import func
+from sqlalchemy import func, case
 import uuid
 import time
 import json
@@ -984,6 +984,9 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             deepest_emotional_depth=getattr(db_session, 'deepest_emotional_depth', 'surface') or 'surface',
             objection_diffusion_step=getattr(db_session, 'objection_diffusion_step', 0) or 0,
             ownership_substep=getattr(db_session, 'ownership_substep', 0) or 0,
+            # Shared params for link tracking:
+            session_id=session_id,
+            channel=getattr(db_session, 'channel', 'web') or 'web',
         )
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
@@ -1240,6 +1243,23 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     # Step 4: Ensure TidyCal URL is correct (LLM might write wrong tidycal path)
     if "tidycal.com" in text_lower and tidycal_url:
         response_text = re.sub(r'https?://tidycal\.com/\S+', tidycal_url, response_text)
+
+    # Step 5: Replace [INVITATION_LINK] placeholder with tracked invitation URL
+    if "[INVITATION_LINK]" in response_text:
+        from app.invitation import build_invitation_url
+        invitation_url = build_invitation_url(
+            session_id=session_id,
+            arm=arm.value,
+            channel=getattr(db_session, 'channel', 'web') or 'web',
+        )
+        response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
+
+    # Step 6: Track invitation link sent (check for the base URL in the response)
+    from app.invitation import INVITATION_URL as _INVITATION_BASE
+    if _INVITATION_BASE.lower() in response_text.lower() and not getattr(db_session, 'invitation_link_sent', None):
+        db_session.invitation_link_sent = "true"
+        db_session.invitation_link_sent_at = time.time()
+        logger.info(f"[Session {session_id}] Invitation link sent")
 
     # Save assistant message
     assistant_msg_id = str(uuid.uuid4())
@@ -1617,6 +1637,157 @@ def get_cds_summary(db: DBSessionType = Depends(get_db)):
             "sally_cds_target": 0.5,
             "lift_target": 0.3,
         },
+    }
+
+
+# --- Admin Analytics ---
+
+@app.get("/api/admin/analytics")
+def get_admin_analytics(db: DBSessionType = Depends(get_db)):
+    """Comprehensive analytics for the admin dashboard."""
+    experiment_filter = DBSession.experiment_mode == "true"
+
+    # Per-arm aggregations
+    arm_counts = (
+        db.query(
+            DBSession.assigned_arm,
+            func.count(DBSession.id).label("total"),
+            func.count(case((DBSession.status == "completed", 1))).label("completed"),
+            func.count(case((DBSession.status == "abandoned", 1))).label("abandoned"),
+            func.count(case((DBSession.status == "switched", 1))).label("switched"),
+            func.count(case((DBSession.status == "active", 1))).label("active"),
+            func.count(case((DBSession.cds_score.isnot(None), 1))).label("has_cds"),
+            func.avg(DBSession.cds_score).label("mean_cds"),
+            func.avg(DBSession.pre_conviction).label("mean_pre"),
+            func.avg(DBSession.post_conviction).label("mean_post"),
+            func.avg(DBSession.message_count).label("avg_messages"),
+            func.avg(DBSession.turn_number).label("avg_turns"),
+        )
+        .filter(experiment_filter, DBSession.assigned_arm.isnot(None))
+        .group_by(DBSession.assigned_arm)
+        .all()
+    )
+
+    # Channel breakdown
+    channel_counts = (
+        db.query(
+            DBSession.channel,
+            func.count(DBSession.id).label("count"),
+        )
+        .filter(experiment_filter)
+        .group_by(DBSession.channel)
+        .all()
+    )
+
+    # Follow-up stats
+    followup_stats = (
+        db.query(
+            func.count(case((DBSession.followup_count > 0, 1))).label("sessions_with_followups"),
+            func.avg(DBSession.followup_count).label("avg_followups"),
+            func.sum(DBSession.followup_count).label("total_followups_sent"),
+        )
+        .filter(experiment_filter, DBSession.channel == "sms")
+        .first()
+    )
+
+    # Phase distribution at session end (Sally only)
+    phase_at_end = (
+        db.query(
+            DBSession.current_phase,
+            func.count(DBSession.id).label("count"),
+        )
+        .filter(
+            experiment_filter,
+            DBSession.assigned_arm == "sally_nepq",
+            DBSession.status.in_(["completed", "abandoned"]),
+        )
+        .group_by(DBSession.current_phase)
+        .all()
+    )
+
+    # Recent sessions (last 50)
+    recent = (
+        db.query(DBSession)
+        .filter(experiment_filter)
+        .order_by(DBSession.start_time.desc())
+        .limit(50)
+        .all()
+    )
+
+    # Build response
+    arms_data = {}
+    total_experiment = 0
+    total_with_cds = 0
+    for row in arm_counts:
+        arms_data[row.assigned_arm] = {
+            "total": row.total,
+            "completed": row.completed,
+            "abandoned": row.abandoned,
+            "switched": row.switched,
+            "active": row.active,
+            "has_cds": row.has_cds,
+            "mean_cds": round(float(row.mean_cds), 2) if row.mean_cds else None,
+            "mean_pre": round(float(row.mean_pre), 1) if row.mean_pre else None,
+            "mean_post": round(float(row.mean_post), 1) if row.mean_post else None,
+            "avg_messages": round(float(row.avg_messages), 1) if row.avg_messages else None,
+            "avg_turns": round(float(row.avg_turns), 1) if row.avg_turns else None,
+            "completion_rate": round(row.completed / row.total * 100, 1) if row.total > 0 else 0,
+        }
+        total_experiment += row.total
+        total_with_cds += row.has_cds
+
+    # Sally lift calculations
+    sally_mean = arms_data.get("sally_nepq", {}).get("mean_cds")
+    lifts = {}
+    if sally_mean is not None:
+        for control in ["hank_hypes", "ivy_informs"]:
+            control_mean = arms_data.get(control, {}).get("mean_cds")
+            if control_mean is not None:
+                lifts[control] = round(sally_mean - control_mean, 2)
+
+    # Go/Iterate/Kill status
+    status = "insufficient_data"
+    if sally_mean is not None and total_with_cds >= 20:
+        if sally_mean >= 0.5 and all(v >= 0.3 for v in lifts.values()):
+            status = "GO"
+        elif sally_mean >= 0.2:
+            status = "ITERATE"
+        else:
+            status = "KILL"
+
+    return {
+        "experiment_status": status,
+        "total_experiment_sessions": total_experiment,
+        "total_with_cds": total_with_cds,
+        "target_sessions": 60,
+        "progress_pct": round(total_with_cds / 60 * 100, 1) if total_with_cds else 0,
+        "arms": arms_data,
+        "sally_lift": lifts,
+        "channels": {row.channel or "unknown": row.count for row in channel_counts},
+        "followups": {
+            "sessions_with_followups": followup_stats.sessions_with_followups if followup_stats else 0,
+            "avg_followups_per_session": round(float(followup_stats.avg_followups), 1) if followup_stats and followup_stats.avg_followups else 0,
+            "total_sent": followup_stats.total_followups_sent if followup_stats else 0,
+        },
+        "sally_phase_distribution": {row.current_phase: row.count for row in phase_at_end},
+        "recent_sessions": [
+            {
+                "id": s.id,
+                "arm": s.assigned_arm,
+                "channel": getattr(s, 'channel', 'web'),
+                "status": s.status,
+                "pre_conviction": s.pre_conviction,
+                "post_conviction": s.post_conviction,
+                "cds_score": s.cds_score,
+                "message_count": s.message_count,
+                "turn_number": s.turn_number,
+                "current_phase": s.current_phase,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "followup_count": getattr(s, 'followup_count', 0),
+            }
+            for s in recent
+        ],
     }
 
 

@@ -684,6 +684,8 @@ def _process_and_reply_async(
                 deepest_emotional_depth=deepest_emotional_depth,
                 objection_diffusion_step=objection_diffusion_step,
                 ownership_substep=ownership_substep,
+                session_id=session_id,
+                channel="sms",
             )
         except Exception as e:
             logger.error(f"[SMS:{session_id}] Async engine error: {e}")
@@ -738,6 +740,23 @@ def _process_and_reply_async(
         # Strip payment link placeholders (don't work well in SMS)
         if "[PAYMENT_LINK]" in response_text:
             response_text = response_text.replace("[PAYMENT_LINK]", "[link will be sent separately]")
+
+        # Replace [INVITATION_LINK] with tracked URL (invitation pages work fine in SMS)
+        if "[INVITATION_LINK]" in response_text:
+            from app.invitation import build_invitation_url
+            invitation_url = build_invitation_url(
+                session_id=session_id,
+                arm=arm,
+                channel="sms",
+            )
+            response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
+
+        # Track invitation link sent
+        from app.invitation import INVITATION_URL as _INVITATION_BASE
+        if _INVITATION_BASE.lower() in response_text.lower() and not getattr(session, 'invitation_link_sent', None):
+            session.invitation_link_sent = "true"
+            session.invitation_link_sent_at = time.time()
+            logger.info(f"[SMS] Session {session_id}: invitation link sent")
 
         # Check session end
         if result["session_ended"]:

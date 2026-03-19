@@ -4,6 +4,7 @@ const NAV_ITEMS = [
   { path: "/", label: "Chat" },
   { path: "/dashboard", label: "Dashboard" },
   { path: "/history", label: "History" },
+  { path: "/admin", label: "Admin" },
 ];
 
 export function Header() {

@@ -1165,6 +1165,24 @@ The [PAYMENT_LINK] text gets automatically replaced with the real Stripe payment
 This is CRITICAL. Your response MUST contain [PAYMENT_LINK] somewhere.
 """
 
+    # Append invitation link as a secondary CTA in COMMITMENT/TERMINATED closing messages
+    if contact_instructions and target_phase in closing_phases:
+        # Check if invitation link was already sent in this conversation
+        from app.invitation import INVITATION_URL
+        invitation_already_sent = any(
+            "100x.inc/academy" in m.get("content", "").lower()
+            for m in conversation_history
+            if m.get("role") == "assistant"
+        )
+        if not invitation_already_sent:
+            contact_instructions += f"""
+INVITATION LINK (OPTIONAL — mention ONCE if natural):
+If the prospect wants to explore further or isn't ready for the paid workshop, you can also share:
+"If you'd like to explore this further, here's where you can request an invitation to the AI Discovery Workshop: [INVITATION_LINK]"
+The [INVITATION_LINK] placeholder will be replaced with the real URL automatically.
+Only mention this ONCE per conversation, and only if it fits naturally. Do NOT force it.
+"""
+
     # Add end instructions only when session is ending WITHOUT contact/link instructions
     end_instructions = ""
     if decision.action == "END" and not contact_instructions:

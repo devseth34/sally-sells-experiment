@@ -103,6 +103,10 @@ class DBSession(Base):
     last_followup_at = Column(Float, nullable=True)       # Timestamp of last follow-up sent
     followup_paused = Column(String, nullable=True)       # "true" if user texted PAUSE
 
+    # Invitation link tracking
+    invitation_link_sent = Column(String, nullable=True)       # "true" if invitation URL was sent
+    invitation_link_sent_at = Column(Float, nullable=True)     # Timestamp when invitation link was sent
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -189,6 +193,8 @@ def init_db():
             "followup_count": "ALTER TABLE sessions ADD COLUMN followup_count INTEGER DEFAULT 0",
             "last_followup_at": "ALTER TABLE sessions ADD COLUMN last_followup_at FLOAT",
             "followup_paused": "ALTER TABLE sessions ADD COLUMN followup_paused VARCHAR",
+            "invitation_link_sent": "ALTER TABLE sessions ADD COLUMN invitation_link_sent VARCHAR",
+            "invitation_link_sent_at": "ALTER TABLE sessions ADD COLUMN invitation_link_sent_at FLOAT",
         }
         applied = 0
         for col_name, sql in migrations.items():

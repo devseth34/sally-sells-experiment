@@ -95,6 +95,8 @@ class ControlBot:
         user_message: str,
         conversation_history: list[dict],
         memory_context: str = "",
+        session_id: str = "",
+        channel: str = "web",
     ) -> dict:
         """
         Generate a response using a single Claude API call.
@@ -140,7 +142,7 @@ class ControlBot:
             response_text = response_text[1:-1]
 
         # Link injection — same pattern as Sally's main.py
-        response_text = self._inject_links(response_text)
+        response_text = self._inject_links(response_text, session_id=session_id, arm=self.name, channel=channel)
 
         # Detect session end
         session_ended = self._should_end(user_message, response_text, len(conversation_history))
@@ -160,7 +162,7 @@ class ControlBot:
             "ownership_substep": 0,
         }
 
-    def _inject_links(self, response_text: str) -> str:
+    def _inject_links(self, response_text: str, session_id: str = "", arm: str = "", channel: str = "web") -> str:
         """Handle link placeholders and fix hallucinated URLs."""
         text_lower = response_text.lower()
 
@@ -174,6 +176,16 @@ class ControlBot:
         if tidycal_path and "tidycal.com" in text_lower:
             tidycal_url = f"https://tidycal.com/{tidycal_path}"
             response_text = re.sub(r'https?://tidycal\.com/\S+', tidycal_url, response_text)
+
+        # Replace [INVITATION_LINK] placeholder with tracked invitation URL
+        if "[INVITATION_LINK]" in response_text and session_id:
+            from app.invitation import build_invitation_url
+            invitation_url = build_invitation_url(
+                session_id=session_id,
+                arm=arm or self.name,
+                channel=channel,
+            )
+            response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
 
         return response_text
 

@@ -381,6 +381,20 @@ def _process_session_followup(db, session: DBSession, now: float):
         logger.warning(f"[Followup] Session {session.id}: empty follow-up generated, skipping")
         return
 
+    # If this is the final follow-up, append post-conviction question
+    is_final_followup = (followup_count + 1) >= config["max_followups"]
+    if is_final_followup:
+        followup_text += (
+            "\n\nOne last question before I go — on a scale of 1-10, "
+            "how likely are you NOW to invest in a $10,000 AI program "
+            "for your business? Just reply with a number."
+        )
+        # Transition to post_survey so the reply is captured as a score
+        session.sms_state = "post_survey"
+        session.status = "completed"
+        session.end_time = time.time()
+        logger.info(f"[Followup] Session {session.id}: final follow-up with post-survey, transitioning to post_survey")
+
     # Send the SMS
     if not send_sms(session.phone_number, followup_text):
         return  # Failed to send, try again next cycle
