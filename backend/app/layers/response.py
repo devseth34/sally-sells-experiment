@@ -1086,10 +1086,12 @@ Looking forward to having you join!"
 """
                 else:
                     contact_instructions = f"""
-CLOSING: Phone was declined, that's fine. Send them the PAID workshop link.
-You MUST include [PAYMENT_LINK] in your response.
+CLOSING: Phone was declined, that's fine. Share the invitation page as the primary next step.
+You MUST include [INVITATION_LINK] in your response.
 
-"No problem at all. Here's the link to secure your spot: [PAYMENT_LINK]"
+"No problem at all. Here's where you can explore the AI Discovery Workshop and request an invitation: [INVITATION_LINK]"
+
+The [INVITATION_LINK] placeholder will be replaced with the real URL automatically.
 """
             else:
                 contact_instructions = """
@@ -1153,19 +1155,21 @@ CRITICAL: Do NOT re-send the Stripe payment link. They already have it.
 """
             else:
                 contact_instructions = f"""
-CLOSING: You have their email and phone. They chose the PAID workshop ($10,000).
-You MUST include the exact text [PAYMENT_LINK] in your response. Do NOT skip this.
+CLOSING: You have their email and phone. Share the invitation page as the primary next step.
+You MUST include the exact text [INVITATION_LINK] in your response. This is the PRIMARY link.
 
 Your response MUST look something like:
-"Here's the link to secure your spot: [PAYMENT_LINK]
+"Here's where you can explore the AI Discovery Workshop and request an invitation: [INVITATION_LINK]
 
 Looking forward to getting this started! [warm closing]"
 
-The [PAYMENT_LINK] text gets automatically replaced with the real Stripe payment URL.
-This is CRITICAL. Your response MUST contain [PAYMENT_LINK] somewhere.
+The [INVITATION_LINK] text gets automatically replaced with the real URL.
+This is CRITICAL. Your response MUST contain [INVITATION_LINK] somewhere.
+
+Only if the prospect EXPLICITLY asks to pay $10,000 right now, use [PAYMENT_LINK] instead.
 """
 
-    # Append invitation link as a secondary CTA in COMMITMENT/TERMINATED closing messages
+    # Ensure invitation link awareness in closing phases
     if contact_instructions and target_phase in closing_phases:
         # Check if invitation link was already sent in this conversation
         from app.invitation import INVITATION_URL
@@ -1174,13 +1178,12 @@ This is CRITICAL. Your response MUST contain [PAYMENT_LINK] somewhere.
             for m in conversation_history
             if m.get("role") == "assistant"
         )
-        if not invitation_already_sent:
+        if not invitation_already_sent and "[INVITATION_LINK]" not in contact_instructions:
             contact_instructions += f"""
-INVITATION LINK (OPTIONAL — mention ONCE if natural):
-If the prospect wants to explore further or isn't ready for the paid workshop, you can also share:
-"If you'd like to explore this further, here's where you can request an invitation to the AI Discovery Workshop: [INVITATION_LINK]"
+INVITATION LINK REMINDER:
+The primary link to share is [INVITATION_LINK] — it directs them to the AI Discovery Workshop invitation page.
 The [INVITATION_LINK] placeholder will be replaced with the real URL automatically.
-Only mention this ONCE per conversation, and only if it fits naturally. Do NOT force it.
+You MUST include [INVITATION_LINK] in your response unless you already included [PAYMENT_LINK] or a TidyCal link.
 """
 
     # Add end instructions only when session is ending WITHOUT contact/link instructions
