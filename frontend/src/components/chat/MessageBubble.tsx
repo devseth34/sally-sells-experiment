@@ -49,6 +49,21 @@ function renderWithLinks(text: string) {
       );
     }
 
+    // 100x Academy invitation link → purple invitation button
+    if (part.includes("100x.inc/academy")) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 my-2 px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-500 no-underline font-semibold text-sm transition-colors"
+        >
+          🚀 Request Your Invitation
+        </a>
+      );
+    }
+
     // Any other URL → regular clickable link
     if (/^https?:\/\//.test(part)) {
       return (
