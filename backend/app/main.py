@@ -6,7 +6,7 @@ Persists prospect profile and thought logs per session.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSessionType
@@ -1336,8 +1336,33 @@ def get_session(session_id: str, db: DBSessionType = Depends(get_db)):
 # --- Session List ---
 
 @app.get("/api/sessions", response_model=list[SessionListItem])
-def list_sessions(db: DBSessionType = Depends(get_db)):
-    sessions = db.query(DBSession).order_by(DBSession.start_time.desc()).all()
+def list_sessions(
+    db: DBSessionType = Depends(get_db),
+    channel: Optional[str] = Query(None, description="Filter by channel: web, sms"),
+    arm: Optional[str] = Query(None, description="Filter by arm: sally_nepq, hank_hypes, ivy_informs"),
+    status: Optional[str] = Query(None, description="Filter by status: active, completed, abandoned, switched"),
+    search: Optional[str] = Query(None, description="Search by session ID or phone number"),
+    start_date: Optional[float] = Query(None, description="Filter sessions after this unix timestamp"),
+    end_date: Optional[float] = Query(None, description="Filter sessions before this unix timestamp"),
+):
+    query = db.query(DBSession)
+    if channel:
+        query = query.filter(DBSession.channel == channel)
+    if arm:
+        query = query.filter(DBSession.assigned_arm == arm)
+    if status:
+        query = query.filter(DBSession.status == status)
+    if search:
+        query = query.filter(
+            (DBSession.id.ilike(f"%{search}%")) |
+            (DBSession.phone_number.ilike(f"%{search}%"))
+        )
+    if start_date:
+        query = query.filter(DBSession.start_time >= start_date)
+    if end_date:
+        query = query.filter(DBSession.start_time <= end_date)
+
+    sessions = query.order_by(DBSession.start_time.desc()).limit(200).all()
     return [
         SessionListItem(
             id=s.id,
@@ -1350,6 +1375,11 @@ def list_sessions(db: DBSessionType = Depends(get_db)):
             start_time=s.start_time,
             end_time=s.end_time,
             assigned_arm=getattr(s, 'assigned_arm', None),
+            channel=getattr(s, 'channel', None),
+            phone_number=getattr(s, 'phone_number', None),
+            turn_number=getattr(s, 'turn_number', None),
+            followup_count=getattr(s, 'followup_count', None),
+            experiment_mode=getattr(s, 'experiment_mode', None),
         )
         for s in sessions
     ]
@@ -1393,6 +1423,134 @@ def get_metrics(db: DBSessionType = Depends(get_db)):
         phase_distribution=phase_dist,
         failure_modes=failure_modes,
     )
+
+
+# --- Analytics Trends ---
+
+@app.get("/api/analytics/trends")
+def get_trends(db: DBSessionType = Depends(get_db)):
+    """Time-series data for dashboard trend charts."""
+    cutoff = time.time() - 30 * 86400  # last 30 days
+
+    # --- 1. Sessions by day ---
+    # For PostgreSQL: convert unix float → timestamp → date
+    date_col = func.date(func.to_timestamp(DBSession.start_time))
+
+    day_rows = (
+        db.query(
+            date_col.label("day"),
+            func.count(DBSession.id).label("total"),
+            func.count(func.nullif(DBSession.assigned_arm != "sally_nepq", True)).label("sally"),
+            func.count(func.nullif(DBSession.assigned_arm != "hank_hypes", True)).label("hank"),
+            func.count(func.nullif(DBSession.assigned_arm != "ivy_informs", True)).label("ivy"),
+            func.count(func.nullif(DBSession.channel != "web", True)).label("web"),
+            func.count(func.nullif(DBSession.channel != "sms", True)).label("sms"),
+        )
+        .filter(DBSession.start_time >= cutoff)
+        .group_by(date_col)
+        .order_by(date_col)
+        .all()
+    )
+
+    sessions_by_day = [
+        {
+            "date": str(row.day),
+            "total": row.total,
+            "sally": row.sally,
+            "hank": row.hank,
+            "ivy": row.ivy,
+            "web": row.web,
+            "sms": row.sms,
+        }
+        for row in day_rows
+    ]
+
+    # --- 2. CDS by day ---
+    from sqlalchemy import case as sql_case
+
+    cds_rows = (
+        db.query(
+            date_col.label("day"),
+            func.avg(DBSession.cds_score).label("mean_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "sally_nepq", DBSession.cds_score),
+            )).label("sally_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "hank_hypes", DBSession.cds_score),
+            )).label("hank_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "ivy_informs", DBSession.cds_score),
+            )).label("ivy_cds"),
+            func.count(DBSession.id).label("count"),
+        )
+        .filter(
+            DBSession.start_time >= cutoff,
+            DBSession.cds_score.isnot(None),
+        )
+        .group_by(date_col)
+        .order_by(date_col)
+        .all()
+    )
+
+    cds_by_day = [
+        {
+            "date": str(row.day),
+            "mean_cds": round(float(row.mean_cds), 2) if row.mean_cds is not None else None,
+            "sally_cds": round(float(row.sally_cds), 2) if row.sally_cds is not None else None,
+            "hank_cds": round(float(row.hank_cds), 2) if row.hank_cds is not None else None,
+            "ivy_cds": round(float(row.ivy_cds), 2) if row.ivy_cds is not None else None,
+            "count": row.count,
+        }
+        for row in cds_rows
+    ]
+
+    # --- 3. Avg length by arm ---
+    arm_rows = (
+        db.query(
+            DBSession.assigned_arm.label("arm"),
+            func.avg(DBSession.message_count).label("avg_messages"),
+            func.avg(DBSession.turn_number).label("avg_turns"),
+            func.avg(DBSession.end_time - DBSession.start_time).label("avg_duration_seconds"),
+        )
+        .filter(
+            DBSession.status == "completed",
+            DBSession.assigned_arm.isnot(None),
+            DBSession.end_time.isnot(None),
+        )
+        .group_by(DBSession.assigned_arm)
+        .all()
+    )
+
+    avg_length_by_arm = [
+        {
+            "arm": row.arm,
+            "avg_messages": round(float(row.avg_messages), 1) if row.avg_messages else 0,
+            "avg_turns": round(float(row.avg_turns), 1) if row.avg_turns else 0,
+            "avg_duration_minutes": round(float(row.avg_duration_seconds) / 60, 1) if row.avg_duration_seconds else 0,
+        }
+        for row in arm_rows
+    ]
+
+    # --- 4. Funnel ---
+    total_sessions = db.query(DBSession).count()
+    reached_active = db.query(DBSession).filter(
+        DBSession.sms_state.in_(["active", "post_survey", "done"]) |
+        (DBSession.channel != "sms")
+    ).count()
+    reached_completed = db.query(DBSession).filter(DBSession.status == "completed").count()
+    has_cds = db.query(DBSession).filter(DBSession.cds_score.isnot(None)).count()
+
+    return {
+        "sessions_by_day": sessions_by_day,
+        "cds_by_day": cds_by_day,
+        "avg_length_by_arm": avg_length_by_arm,
+        "funnel": {
+            "total_sessions": total_sessions,
+            "reached_active": reached_active,
+            "reached_completed": reached_completed,
+            "has_cds": has_cds,
+        },
+    }
 
 
 # --- CDS Monitoring (Experiment Mode) ---

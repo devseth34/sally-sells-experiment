@@ -184,6 +184,11 @@ export interface SessionListItem {
   start_time: number;
   end_time: number | null;
   assigned_arm?: string;
+  channel?: string;
+  phone_number?: string;
+  turn_number?: number;
+  followup_count?: number;
+  experiment_mode?: string;
 }
 
 export interface MetricsResponse {
@@ -255,8 +260,27 @@ export async function getSession(sessionId: string): Promise<SessionDetail> {
   return res.json();
 }
 
-export async function listSessions(): Promise<SessionListItem[]> {
-  const res = await fetch(`${API_BASE}/sessions`);
+export interface SessionFilters {
+  channel?: string;
+  arm?: string;
+  status?: string;
+  search?: string;
+  startDate?: number;
+  endDate?: number;
+}
+
+export async function listSessions(filters?: SessionFilters): Promise<SessionListItem[]> {
+  const params = new URLSearchParams();
+  if (filters?.channel) params.set("channel", filters.channel);
+  if (filters?.arm) params.set("arm", filters.arm);
+  if (filters?.status) params.set("status", filters.status);
+  if (filters?.search) params.set("search", filters.search);
+  if (filters?.startDate) params.set("start_date", filters.startDate.toString());
+  if (filters?.endDate) params.set("end_date", filters.endDate.toString());
+
+  const qs = params.toString();
+  const url = qs ? `${API_BASE}/sessions?${qs}` : `${API_BASE}/sessions`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to list sessions: ${res.statusText}`);
   return res.json();
 }
@@ -375,6 +399,46 @@ export async function switchBot(sessionId: string, newBot: BotArm): Promise<Swit
     body: JSON.stringify({ new_bot: newBot }),
   });
   if (!res.ok) throw new Error(`Failed to switch bot: ${res.statusText}`);
+  return res.json();
+}
+
+// --- Analytics Trends ---
+
+export interface TrendsResponse {
+  sessions_by_day: Array<{
+    date: string;
+    total: number;
+    sally: number;
+    hank: number;
+    ivy: number;
+    web: number;
+    sms: number;
+  }>;
+  cds_by_day: Array<{
+    date: string;
+    mean_cds: number | null;
+    sally_cds: number | null;
+    hank_cds: number | null;
+    ivy_cds: number | null;
+    count: number;
+  }>;
+  avg_length_by_arm: Array<{
+    arm: string;
+    avg_messages: number;
+    avg_turns: number;
+    avg_duration_minutes: number;
+  }>;
+  funnel: {
+    total_sessions: number;
+    reached_active: number;
+    reached_completed: number;
+    has_cds: number;
+  };
+}
+
+export async function getTrends(): Promise<TrendsResponse> {
+  const res = await fetch(`${API_BASE}/analytics/trends`);
+  if (!res.ok) throw new Error(`Failed to get trends: ${res.statusText}`);
   return res.json();
 }
 

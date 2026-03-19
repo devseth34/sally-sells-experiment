@@ -20,7 +20,7 @@ export function ExperimentPage() {
   const [currentPhase, setCurrentPhase] = useState("CONVERSATION");
 
   // Bot switching state
-  const [botDisplayName, setBotDisplayName] = useState<string>("AI Assistant");
+  const [_botDisplayName, setBotDisplayName] = useState<string>("AI Assistant");
   const [assignedArm, setAssignedArm] = useState<string>("sally_nepq");
 
   const [seconds, setSeconds] = useState(0);

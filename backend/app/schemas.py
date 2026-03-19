@@ -107,6 +107,11 @@ class SessionListItem(BaseModel):
     start_time: float
     end_time: Optional[float]
     assigned_arm: Optional[str] = None
+    channel: Optional[str] = None
+    phone_number: Optional[str] = None
+    turn_number: Optional[int] = None
+    followup_count: Optional[int] = None
+    experiment_mode: Optional[str] = None
 
 
 class PostConvictionRequest(BaseModel):
