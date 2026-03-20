@@ -209,6 +209,8 @@ export async function createSession(
   preConviction: number,
   selectedBot?: BotArm,
   experimentMode: boolean = false,
+  participantName?: string,
+  participantEmail?: string,
 ): Promise<CreateSessionResponse> {
   const visitorId = getOrCreateVisitorId();
   const body: Record<string, unknown> = {
@@ -218,6 +220,12 @@ export async function createSession(
   };
   if (selectedBot) {
     body.selected_bot = selectedBot;
+  }
+  if (participantName) {
+    body.participant_name = participantName;
+  }
+  if (participantEmail) {
+    body.participant_email = participantEmail;
   }
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",
@@ -499,6 +507,8 @@ export interface AdminSession {
   start_time: number;
   end_time: number | null;
   followup_count: number;
+  participant_name?: string;
+  participant_email?: string;
 }
 
 export interface AdminAnalyticsResponse {

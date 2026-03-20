@@ -63,11 +63,11 @@ export function ExperimentPage() {
     };
   }, [sessionId, sessionEnded]);
 
-  const handleStartSession = async (score: number) => {
+  const handleStartSession = async (score: number, name: string, email: string) => {
     try {
       setIsLoading(true);
       // No bot selected — backend randomly assigns. experiment_mode = true.
-      const res = await createSession(score, undefined, true);
+      const res = await createSession(score, undefined, true, name, email);
       setSessionId(res.session_id);
       setCurrentPhase(res.current_phase);
       setPreConviction(res.pre_conviction);
@@ -218,7 +218,7 @@ export function ExperimentPage() {
           <div className="text-center">
             <h2 className="text-lg font-semibold mb-2">AI Sales Assistant</h2>
             <p className="text-sm text-zinc-500 mb-6">
-              Chat with an AI assistant about 100x Academy's AI Discovery Workshop
+              Chat with an AI assistant about 100x Academy's AI for Mortgage Professionals
             </p>
             <button
               onClick={() => setShowSurvey(true)}

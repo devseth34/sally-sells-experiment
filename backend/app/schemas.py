@@ -34,6 +34,8 @@ class CreateSessionRequest(BaseModel):
     selected_bot: Optional[BotArm] = Field(default=None, description="Which bot to talk to (None = random assignment)")
     visitor_id: Optional[str] = Field(default=None, description="Persistent visitor identifier for memory/resumption")
     experiment_mode: bool = Field(default=False, description="If true, bot is randomly assigned and arm is hidden from user")
+    participant_name: Optional[str] = Field(default=None, description="Participant's name")
+    participant_email: Optional[str] = Field(default=None, description="Participant's email address")
 
 
 class SendMessageRequest(BaseModel):

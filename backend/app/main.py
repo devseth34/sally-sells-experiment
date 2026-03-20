@@ -762,6 +762,8 @@ def create_session(
         visitor_id=visitor_id,
         user_id=user_id,
         experiment_mode="true" if request.experiment_mode else None,
+        participant_name=request.participant_name,
+        participant_email=request.participant_email,
         start_time=now,
         message_count=1,
         retry_count=0,
@@ -1771,6 +1773,8 @@ def get_admin_analytics(db: DBSessionType = Depends(get_db)):
         "recent_sessions": [
             {
                 "id": s.id,
+                "participant_name": getattr(s, 'participant_name', None),
+                "participant_email": getattr(s, 'participant_email', None),
                 "arm": s.assigned_arm,
                 "channel": getattr(s, 'channel', 'web'),
                 "status": s.status,
@@ -2137,14 +2141,18 @@ def submit_post_conviction(session_id: str, request: PostConvictionRequest, db: 
 @app.get("/api/export/csv")
 def export_csv(db: DBSessionType = Depends(get_db)):
     """Export all sessions + transcripts as a CSV for research analysis."""
+    from datetime import date as _date
     sessions = db.query(DBSession).order_by(DBSession.start_time.desc()).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "session_id", "status", "final_phase", "pre_conviction", "post_conviction",
+        "session_id", "participant_name", "participant_email",
+        "assigned_arm", "channel", "status", "final_phase",
+        "pre_conviction", "post_conviction",
         "cds_score", "message_count", "turn_number", "start_time", "end_time",
-        "duration_seconds", "prospect_name", "prospect_role", "prospect_company",
+        "duration_seconds", "invitation_link_sent",
+        "prospect_name", "prospect_role", "prospect_company",
         "objections_encountered", "transcript",
     ])
 
@@ -2174,6 +2182,10 @@ def export_csv(db: DBSessionType = Depends(get_db)):
 
         writer.writerow([
             s.id,
+            getattr(s, 'participant_name', None) or "",
+            getattr(s, 'participant_email', None) or "",
+            getattr(s, 'assigned_arm', None) or "",
+            getattr(s, 'channel', None) or "",
             s.status,
             s.current_phase,
             s.pre_conviction,
@@ -2184,6 +2196,7 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             s.start_time,
             s.end_time,
             duration,
+            getattr(s, 'invitation_link_sent', None) or "",
             profile.get("name", ""),
             profile.get("role", ""),
             profile.get("company", ""),
@@ -2191,11 +2204,12 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             transcript,
         ])
 
+    today_str = _date.today().isoformat()
     output.seek(0)
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=sally_sells_export.csv"},
+        headers={"Content-Disposition": f"attachment; filename=sally_sells_export_{today_str}.csv"},
     )
 
 

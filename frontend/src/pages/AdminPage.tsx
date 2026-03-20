@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Header } from "../components/layout/Header";
 import { Card, CardHeader, CardContent, Badge } from "../components/ui";
-import { getAdminAnalytics } from "../lib/api";
+import { getAdminAnalytics, getExportCsvUrl } from "../lib/api";
 import type { AdminAnalyticsResponse, AdminSession } from "../lib/api";
 import { formatDate, formatDuration } from "../lib/utils";
 import {
@@ -162,7 +162,16 @@ export function AdminPage() {
     <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        <h1 className="text-lg font-semibold">Experiment Dashboard</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Experiment Dashboard</h1>
+          <a
+            href={getExportCsvUrl()}
+            download
+            className="h-9 px-4 rounded-md text-sm font-medium bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-zinc-700 transition-colors inline-flex items-center gap-2"
+          >
+            Download CSV Report
+          </a>
+        </div>
 
         {/* Section A: Overview Cards */}
         <div className="grid grid-cols-4 gap-4">
@@ -398,6 +407,8 @@ export function AdminPage() {
                 <thead>
                   <tr className="border-b border-zinc-800 text-zinc-500 uppercase tracking-wider">
                     <th className="text-left py-2 px-2">ID</th>
+                    <th className="text-left py-2 px-2">Name</th>
+                    <th className="text-left py-2 px-2">Email</th>
                     <th className="text-left py-2 px-2">Arm</th>
                     <th className="text-left py-2 px-2">Channel</th>
                     <th className="text-left py-2 px-2">Status</th>
@@ -418,6 +429,12 @@ export function AdminPage() {
                     >
                       <td className="py-2 px-2 font-mono text-zinc-400">
                         {s.id}
+                      </td>
+                      <td className="py-2 px-2 text-zinc-300">
+                        {s.participant_name || "—"}
+                      </td>
+                      <td className="py-2 px-2 text-zinc-400">
+                        {s.participant_email || "—"}
                       </td>
                       <td className="py-2 px-2">
                         <ArmBadge arm={s.arm} />
