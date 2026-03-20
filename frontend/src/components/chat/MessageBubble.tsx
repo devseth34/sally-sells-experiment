@@ -6,6 +6,7 @@ interface MessageBubbleProps {
   message: MessageResponse;
   onInvitationClick?: (url: string) => void;
   hasRated?: boolean;
+  hidePhase?: boolean;
 }
 
 /**
@@ -100,7 +101,7 @@ function renderWithLinks(
   });
 }
 
-export function MessageBubble({ message, onInvitationClick, hasRated }: MessageBubbleProps) {
+export function MessageBubble({ message, onInvitationClick, hasRated, hidePhase }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const phaseColor = getPhaseColor(message.phase);
 
@@ -120,15 +121,17 @@ export function MessageBubble({ message, onInvitationClick, hasRated }: MessageB
           <span className="text-[10px] text-zinc-600">
             {formatTimestamp(message.timestamp)}
           </span>
-          <span
-            className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider"
-            style={{
-              background: `${phaseColor}15`,
-              color: phaseColor,
-            }}
-          >
-            {getPhaseLabel(message.phase)}
-          </span>
+          {!hidePhase && (
+            <span
+              className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider"
+              style={{
+                background: `${phaseColor}15`,
+                color: phaseColor,
+              }}
+            >
+              {getPhaseLabel(message.phase)}
+            </span>
+          )}
         </div>
       </div>
     </div>
