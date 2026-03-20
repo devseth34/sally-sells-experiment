@@ -55,8 +55,8 @@ export function ConvictionModal({ onStart }: ConvictionModalProps) {
 
         {/* Conviction Score */}
         <p className="text-sm text-zinc-400 mb-3">
-          On a scale of 1-10, how likely are you to purchase a $10,000 AI
-          program today?
+          On a scale of 1-10, how interested are you in using AI to improve
+          your mortgage business?
         </p>
 
         <div className="grid grid-cols-5 gap-2 mb-6">
