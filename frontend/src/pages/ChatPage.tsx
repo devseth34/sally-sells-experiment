@@ -1,19 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { Header } from "../components/layout/Header.tsx";
 import { PhaseIndicator } from "../components/chat/PhaseIndicator.tsx";
 import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ConvictionModal } from "../components/chat/ConvictionModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
-import { AuthModal } from "../components/chat/AuthModal.tsx";
-import { createSession, sendMessage, endSession, endSessionBeacon, checkActiveSession, getSavedUserInfo, clearAuth, switchBot, clearVisitorMemory } from "../lib/api";
-import { BotSwitcher } from "../components/chat/BotSwitcher.tsx";
+import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
 import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
 export function ChatPage() {
-  const navigate = useNavigate();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentPhase, setCurrentPhase] = useState("CONNECTION");
   const [messages, setMessages] = useState<MessageResponse[]>([]);
@@ -24,24 +20,13 @@ export function ChatPage() {
   const [showPostModal, setShowPostModal] = useState(false);
   const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
 
-  // Auth state
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [userInfo, setUserInfo] = useState<{ email: string; name: string } | null>(getSavedUserInfo());
+  // Rating-before-redirect state
+  const [pendingInvitationUrl, setPendingInvitationUrl] = useState<string | null>(null);
+  const [hasRated, setHasRated] = useState(false);
 
   // Phase 1B: Multi-bot state
   const [botDisplayName, setBotDisplayName] = useState<string>("Sally");
   const [assignedArm, setAssignedArm] = useState<string>("sally_nepq");
-
-  // Session resumption state
-  const [resumeData, setResumeData] = useState<{
-    sessionId: string;
-    phase: string;
-    botName: string;
-    arm: string;
-    messages: MessageResponse[];
-    messageCount: number;
-  } | null>(null);
-  const [checkingResume, setCheckingResume] = useState(true);
 
   const [seconds, setSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -81,32 +66,6 @@ export function ChatPage() {
     };
   }, [sessionId, sessionEnded]);
 
-  // Check for resumable session on mount
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      try {
-        const data = await checkActiveSession();
-        if (!cancelled && data && data.messages.length > 0) {
-          setResumeData({
-            sessionId: data.session_id,
-            phase: data.current_phase,
-            botName: data.bot_display_name,
-            arm: data.assigned_arm,
-            messages: data.messages,
-            messageCount: data.messages.length,
-          });
-        }
-      } catch {
-        // Silently fail — just show normal start screen
-      } finally {
-        if (!cancelled) setCheckingResume(false);
-      }
-    }
-    check();
-    return () => { cancelled = true; };
-  }, []);
-
   const handleStartSession = async (score: number, bot: BotArm) => {
     try {
       setIsLoading(true);
@@ -125,17 +84,6 @@ export function ChatPage() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleResumeSession = () => {
-    if (!resumeData) return;
-    setSessionId(resumeData.sessionId);
-    setCurrentPhase(resumeData.phase);
-    setBotDisplayName(resumeData.botName);
-    setAssignedArm(resumeData.arm);
-    setMessages(resumeData.messages);
-    setResumeData(null);
-    setSeconds(0);
   };
 
   const handleSendMessage = async (content: string) => {
@@ -172,6 +120,30 @@ export function ChatPage() {
     }
   };
 
+  // Handle invitation link click — gate behind rating
+  const handleInvitationClick = (url: string) => {
+    if (hasRated) return; // Already rated, link renders as direct <a>
+    setPendingInvitationUrl(url);
+    setShowPostModal(true);
+  };
+
+  // Handle post-conviction modal completion
+  const handlePostConvictionComplete = async (result: PostConvictionResponse) => {
+    setCdsResult(result);
+    setShowPostModal(false);
+    setHasRated(true);
+
+    // If triggered by invitation click (not session_ended), end the session now
+    if (pendingInvitationUrl && sessionId && !sessionEnded) {
+      try {
+        await endSession(sessionId);
+      } catch (err) {
+        console.error("Failed to end session:", err);
+      }
+      setSessionEnded(true);
+    }
+  };
+
   const handleNewSession = async () => {
     // End the current session if it's still active
     if (sessionId && !sessionEnded) {
@@ -188,84 +160,18 @@ export function ChatPage() {
     setPreConviction(null);
     setShowPostModal(false);
     setCdsResult(null);
+    setPendingInvitationUrl(null);
+    setHasRated(false);
     setBotDisplayName("Sally");
     setAssignedArm("sally_nepq");
-    setResumeData(null);
     setSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     setShowModal(true);
   };
 
-  const handleSwitchBot = async (newBot: BotArm) => {
-    if (!sessionId || isLoading) return;
-
-    try {
-      setIsLoading(true);
-      const res = await switchBot(sessionId, newBot);
-
-      // Update state to the new session
-      setSessionId(res.new_session_id);
-      setCurrentPhase(res.current_phase);
-      setBotDisplayName(res.bot_display_name);
-      setAssignedArm(res.new_arm);
-
-      // Keep existing messages and append a divider + new greeting
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `switch-${Date.now()}`,
-          role: "assistant" as const,
-          content: `--- Switched to ${res.bot_display_name} ---`,
-          timestamp: Date.now() / 1000,
-          phase: res.current_phase,
-        },
-        res.greeting,
-      ]);
-    } catch (err) {
-      console.error("Failed to switch bot:", err);
-      alert("Failed to switch bot. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleResetMemory = async () => {
-    if (!confirm("This will clear all stored memory about you. Continue?")) return;
-    try {
-      await clearVisitorMemory();
-      // End current session if active
-      if (sessionId && !sessionEnded) {
-        await endSession(sessionId);
-      }
-      // Reset all state
-      setSessionId(null);
-      setMessages([]);
-      setCurrentPhase("CONNECTION");
-      setSessionEnded(false);
-      setPreConviction(null);
-      setShowPostModal(false);
-      setCdsResult(null);
-      setBotDisplayName("Sally");
-      setAssignedArm("sally_nepq");
-      setSeconds(0);
-      if (timerRef.current) clearInterval(timerRef.current);
-      setShowModal(true);
-      alert("Memory cleared. Starting fresh.");
-    } catch (err) {
-      console.error("Failed to reset memory:", err);
-    }
-  };
-
   return (
     <div className="h-screen flex flex-col bg-zinc-950 text-white">
       <Header />
-
-      {showAuthModal && (
-        <AuthModal
-          onComplete={() => { setShowAuthModal(false); setUserInfo(getSavedUserInfo()); }}
-          onSkip={() => setShowAuthModal(false)}
-        />
-      )}
 
       {showModal && <ConvictionModal onStart={handleStartSession} />}
 
@@ -273,85 +179,24 @@ export function ChatPage() {
         <PostConvictionModal
           sessionId={sessionId}
           preConviction={preConviction}
-          onComplete={(result) => {
-            setCdsResult(result);
-            setShowPostModal(false);
-          }}
+          invitationUrl={pendingInvitationUrl}
+          onComplete={handlePostConvictionComplete}
         />
       )}
 
       {!sessionId && !showModal && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            {userInfo ? (
-              <div className="flex items-center justify-center gap-2 mb-4">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-                <span className="text-xs text-zinc-400">Signed in as {userInfo.name || userInfo.email}</span>
-                <button
-                  onClick={() => { clearAuth(); setUserInfo(null); }}
-                  className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors ml-1"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowAuthModal(true)}
-                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors mb-4 block mx-auto"
-              >
-                Sign in for persistent memory →
-              </button>
-            )}
             <h2 className="text-lg font-semibold mb-2">Sally Sells</h2>
             <p className="text-sm text-zinc-500 mb-6">
-              NEPQ-powered sales agent for 100x Discovery Workshop
+              AI Sales Agent Experiment by 100x
             </p>
-
-            {checkingResume ? (
-              <p className="text-xs text-zinc-600">Checking for previous session...</p>
-            ) : resumeData ? (
-              <div className="space-y-3">
-                <div className="bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-3 text-left max-w-sm mx-auto">
-                  <p className="text-xs text-zinc-400 mb-1">Previous conversation found</p>
-                  <p className="text-sm text-zinc-300">
-                    {resumeData.messageCount} messages with {resumeData.botName}
-                  </p>
-                  <p className="text-xs text-zinc-500 mt-1">Phase: {resumeData.phase}</p>
-                </div>
-                <div className="flex gap-2 justify-center">
-                  <button
-                    onClick={handleResumeSession}
-                    className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
-                  >
-                    Continue Conversation
-                  </button>
-                  <button
-                    onClick={async () => {
-                      // End the previous session so memory extraction runs before new session
-                      if (resumeData?.sessionId) {
-                        try {
-                          await endSession(resumeData.sessionId);
-                        } catch (err) {
-                          console.error("Failed to end previous session:", err);
-                        }
-                      }
-                      setResumeData(null);
-                      setShowModal(true);
-                    }}
-                    className="h-10 px-6 rounded-md text-sm font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
-                  >
-                    Start New
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowModal(true)}
-                className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
-              >
-                Start Conversation
-              </button>
-            )}
+            <button
+              onClick={() => setShowModal(true)}
+              className="h-10 px-6 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
+            >
+              Start Conversation
+            </button>
           </div>
         </div>
       )}
@@ -372,17 +217,6 @@ export function ChatPage() {
                   Pre-score: {preConviction}/10
                 </span>
               )}
-              <BotSwitcher
-                currentArm={assignedArm}
-                onSwitch={handleSwitchBot}
-                disabled={isLoading || sessionEnded}
-              />
-              <button
-                onClick={handleResetMemory}
-                className="text-[10px] text-red-500/60 hover:text-red-400 transition-colors"
-              >
-                Reset Memory
-              </button>
               <span
                 className={`text-xs font-mono ${
                   seconds > 1700
@@ -402,7 +236,12 @@ export function ChatPage() {
 
           <div className="flex-1 overflow-y-auto px-4 py-4">
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onInvitationClick={handleInvitationClick}
+                hasRated={hasRated}
+              />
             ))}
             {isLoading && (
               <div className="flex justify-start mb-3">
@@ -424,7 +263,7 @@ export function ChatPage() {
             <div className="px-4 py-3 bg-zinc-900 border-t border-zinc-800 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className="text-xs text-zinc-400">
-                  Session completed — {currentPhase}
+                  Session completed
                 </span>
                 {cdsResult && (
                   <span className={`text-xs font-mono ${cdsResult.cds_score > 0 ? "text-emerald-400" : cdsResult.cds_score < 0 ? "text-red-400" : "text-zinc-500"}`}>
@@ -433,14 +272,16 @@ export function ChatPage() {
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {/* Book & Pay button preserved for future use
                 {sessionId && (
                   <button
                     onClick={() => navigate(`/booking/${sessionId}`)}
                     className="h-8 px-4 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors"
                   >
-                    Book & Pay →
+                    Book & Pay
                   </button>
                 )}
+                */}
                 <button
                   onClick={handleNewSession}
                   className="h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"

@@ -6,9 +6,10 @@ interface PostConvictionModalProps {
   sessionId: string;
   preConviction: number | null;
   onComplete: (result: PostConvictionResponse) => void;
+  invitationUrl?: string | null;
 }
 
-export function PostConvictionModal({ sessionId, preConviction, onComplete }: PostConvictionModalProps) {
+export function PostConvictionModal({ sessionId, preConviction, onComplete, invitationUrl }: PostConvictionModalProps) {
   const [score, setScore] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<PostConvictionResponse | null>(null);
@@ -65,12 +66,24 @@ export function PostConvictionModal({ sessionId, preConviction, onComplete }: Po
             </div>
           </div>
 
-          <button
-            onClick={() => onComplete(result)}
-            className="w-full h-10 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
-          >
-            Continue
-          </button>
+          {invitationUrl ? (
+            <button
+              onClick={() => {
+                window.open(invitationUrl, "_blank", "noopener,noreferrer");
+                onComplete(result);
+              }}
+              className="w-full h-10 rounded-md text-sm font-medium bg-purple-600 text-white hover:bg-purple-500 transition-colors"
+            >
+              Request Your Invitation
+            </button>
+          ) : (
+            <button
+              onClick={() => onComplete(result)}
+              className="w-full h-10 rounded-md text-sm font-medium bg-white text-black hover:bg-zinc-200 transition-colors"
+            >
+              Continue
+            </button>
+          )}
         </div>
       </div>
     );
@@ -83,8 +96,8 @@ export function PostConvictionModal({ sessionId, preConviction, onComplete }: Po
           One last question...
         </h2>
         <p className="text-sm text-zinc-400 mb-6">
-          After this conversation, how likely are you now to purchase a $10,000 AI
-          Discovery Workshop?
+          After this conversation, how interested are you NOW in exploring AI
+          for your mortgage business?
         </p>
 
         {preConviction && (

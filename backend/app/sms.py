@@ -102,7 +102,7 @@ def _find_active_sms_session(db: DBSessionType, phone: str) -> DBSession | None:
         .filter(
             DBSession.phone_number == phone,
             DBSession.channel == "sms",
-            DBSession.sms_state.in_(["pre_survey", "active", "post_survey"]),
+            DBSession.sms_state.in_(["pre_survey", "active", "post_survey", "rating_before_link"]),
         )
         .order_by(DBSession.start_time.desc())
         .first()
@@ -415,6 +415,33 @@ async def sms_webhook(
 
         return twiml_reply(
             f"Thanks for participating! Your conviction shifted by {cds_str}.\n\n"
+            "Text NEW anytime to start a fresh conversation."
+        )
+
+    # --- State: rating_before_link (rate before getting invitation link) ---
+    if session.sms_state == "rating_before_link":
+        score = _parse_number(message)
+        if score is None:
+            return twiml_reply(
+                "Please reply with a number from 1 to 10 to rate the conversation."
+            )
+
+        session.post_conviction = score
+        pre = session.pre_conviction or 0
+        session.cds_score = score - pre
+        session.sms_state = "done"
+        session.status = "completed"
+        session.end_time = time.time()
+        db.commit()
+
+        cds = session.cds_score
+        cds_str = f"+{cds}" if cds > 0 else str(cds)
+        invitation_url = session.pending_invitation_url or ""
+        logger.info(f"[SMS] Session {session.id} CDS={cds_str} (pre={pre}, post={score})")
+
+        return twiml_reply(
+            f"Thanks! Your conviction shifted by {cds_str}.\n\n"
+            f"Here's where to request your invitation: {invitation_url}\n\n"
             "Text NEW anytime to start a fresh conversation."
         )
 
@@ -760,9 +787,26 @@ def _process_and_reply_async(
 
         # Check session end
         if result["session_ended"]:
-            session.status = "completed"
-            session.end_time = time.time()
-            session.sms_state = "post_survey"
+            from app.invitation import INVITATION_URL as _INV_BASE
+
+            # Check if response contains invitation link — gate behind rating
+            has_invitation = _INV_BASE.lower() in response_text.lower()
+
+            if has_invitation:
+                # Strip the invitation URL from the message text
+                invitation_url_match = re.search(r'https?://[^\s]*100x\.inc/academy/[^\s]*', response_text)
+                saved_url = invitation_url_match.group(0) if invitation_url_match else ""
+                response_text = re.sub(r'https?://[^\s]*100x\.inc/academy/[^\s]*', '', response_text).strip()
+                # Clean up orphaned link text like "Here's the link: " with no URL
+                response_text = re.sub(r':\s*$', '.', response_text)
+
+                session.pending_invitation_url = saved_url
+                session.sms_state = "rating_before_link"
+                # Don't set status=completed yet — wait for rating
+            else:
+                session.status = "completed"
+                session.end_time = time.time()
+                session.sms_state = "post_survey"
 
             # Save bot response
             bot_msg = DBMessage(
@@ -777,8 +821,12 @@ def _process_and_reply_async(
             session.message_count += 1
             db.commit()
 
-            # Send final bot message + post survey via REST API
-            _send_sms_segments(phone, f"{response_text}\n\n---\n\n{POST_SURVEY_MSG}")
+            # Send final bot message + rating/survey prompt
+            rating_prompt = (
+                "Before I share the link — on a scale of 1-10, how would you "
+                "rate this conversation?\n\nReply with a number from 1 to 10."
+            ) if has_invitation else POST_SURVEY_MSG
+            _send_sms_segments(phone, f"{response_text}\n\n---\n\n{rating_prompt}")
 
             # Trigger memory extraction in background
             _trigger_memory_extraction(session, messages, message, result, new_phase_str)

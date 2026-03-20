@@ -106,6 +106,7 @@ class DBSession(Base):
     # Invitation link tracking
     invitation_link_sent = Column(String, nullable=True)       # "true" if invitation URL was sent
     invitation_link_sent_at = Column(Float, nullable=True)     # Timestamp when invitation link was sent
+    pending_invitation_url = Column(String, nullable=True)     # Stored when link gated behind rating
 
 
 class DBMessage(Base):
@@ -195,6 +196,7 @@ def init_db():
             "followup_paused": "ALTER TABLE sessions ADD COLUMN followup_paused VARCHAR",
             "invitation_link_sent": "ALTER TABLE sessions ADD COLUMN invitation_link_sent VARCHAR",
             "invitation_link_sent_at": "ALTER TABLE sessions ADD COLUMN invitation_link_sent_at FLOAT",
+            "pending_invitation_url": "ALTER TABLE sessions ADD COLUMN pending_invitation_url VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():
