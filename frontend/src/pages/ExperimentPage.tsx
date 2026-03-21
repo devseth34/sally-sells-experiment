@@ -20,6 +20,7 @@ export function ExperimentPage() {
   const [currentPhase, setCurrentPhase] = useState("CONVERSATION");
   const [showCompletionCode, setShowCompletionCode] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const [pendingInvitationUrl, setPendingInvitationUrl] = useState<string | null>(null);
 
   // Capture platform params from URL (e.g., ?platform=prolific&pid=XXXXX)
   const urlParams = new URLSearchParams(window.location.search);
@@ -212,6 +213,7 @@ export function ExperimentPage() {
         <PostConvictionModal
           sessionId={sessionId}
           preConviction={preConviction}
+          invitationUrl={pendingInvitationUrl}
           onComplete={(result) => {
             setCdsResult(result);
             setShowPostModal(false);
@@ -302,7 +304,17 @@ export function ExperimentPage() {
 
           <div className="flex-1 overflow-y-auto px-4 py-4">
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} hidePhase />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                hidePhase
+                onInvitationClick={(url) => {
+                  setPendingInvitationUrl(url);
+                  setSessionEnded(true);
+                  setShowPostModal(true);
+                }}
+                hasRated={!!cdsResult}
+              />
             ))}
             {isLoading && (
               <div className="flex justify-start mb-3">
