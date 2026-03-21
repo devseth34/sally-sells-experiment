@@ -764,6 +764,8 @@ def create_session(
         experiment_mode="true" if request.experiment_mode else None,
         participant_name=request.participant_name,
         participant_email=request.participant_email,
+        platform=request.platform,
+        platform_participant_id=request.platform_participant_id,
         start_time=now,
         message_count=1,
         retry_count=0,
@@ -1787,6 +1789,8 @@ def get_admin_analytics(db: DBSessionType = Depends(get_db)):
                 "start_time": s.start_time,
                 "end_time": s.end_time,
                 "followup_count": getattr(s, 'followup_count', 0),
+                "platform": getattr(s, 'platform', None),
+                "platform_participant_id": getattr(s, 'platform_participant_id', None),
             }
             for s in recent
         ],
@@ -2148,6 +2152,7 @@ def export_csv(db: DBSessionType = Depends(get_db)):
     writer = csv.writer(output)
     writer.writerow([
         "session_id", "participant_name", "participant_email",
+        "platform", "platform_participant_id",
         "assigned_arm", "channel", "status", "final_phase",
         "pre_conviction", "post_conviction",
         "cds_score", "message_count", "turn_number", "start_time", "end_time",
@@ -2184,6 +2189,8 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             s.id,
             getattr(s, 'participant_name', None) or "",
             getattr(s, 'participant_email', None) or "",
+            getattr(s, 'platform', None) or "",
+            getattr(s, 'platform_participant_id', None) or "",
             getattr(s, 'assigned_arm', None) or "",
             getattr(s, 'channel', None) or "",
             s.status,

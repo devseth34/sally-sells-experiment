@@ -18,6 +18,13 @@ export function ExperimentPage() {
   const [showPostModal, setShowPostModal] = useState(false);
   const [cdsResult, setCdsResult] = useState<PostConvictionResponse | null>(null);
   const [currentPhase, setCurrentPhase] = useState("CONVERSATION");
+  const [showCompletionCode, setShowCompletionCode] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  // Capture platform params from URL (e.g., ?platform=prolific&pid=XXXXX)
+  const urlParams = new URLSearchParams(window.location.search);
+  const platform = urlParams.get("platform") || undefined;
+  const platformParticipantId = urlParams.get("pid") || undefined;
 
   // Bot switching state
   const [_botDisplayName, setBotDisplayName] = useState<string>("AI Assistant");
@@ -67,7 +74,7 @@ export function ExperimentPage() {
     try {
       setIsLoading(true);
       // No bot selected — backend randomly assigns. experiment_mode = true.
-      const res = await createSession(score, undefined, true, name, email);
+      const res = await createSession(score, undefined, true, name, email, platform, platformParticipantId);
       setSessionId(res.session_id);
       setCurrentPhase(res.current_phase);
       setPreConviction(res.pre_conviction);
@@ -208,8 +215,46 @@ export function ExperimentPage() {
           onComplete={(result) => {
             setCdsResult(result);
             setShowPostModal(false);
+            setShowCompletionCode(true);
           }}
         />
+      )}
+
+      {showCompletionCode && sessionId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 w-full max-w-md mx-4 text-center">
+            <div className="text-3xl mb-3">✅</div>
+            <h2 className="text-lg font-semibold text-white mb-2">
+              Thank you for participating!
+            </h2>
+            <p className="text-sm text-zinc-400 mb-6">
+              Copy the completion code below and paste it into {platform === "mturk" ? "MTurk" : platform === "prolific" ? "Prolific" : "the study platform"} to confirm your participation.
+            </p>
+
+            <div className="bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+              <code className="text-lg font-mono font-bold text-emerald-400 tracking-widest">
+                {sessionId}
+              </code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(sessionId);
+                  setCodeCopied(true);
+                  setTimeout(() => setCodeCopied(false), 2000);
+                }}
+                className="ml-3 px-3 py-1 rounded text-xs font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600 transition-colors"
+              >
+                {codeCopied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowCompletionCode(false)}
+              className="w-full h-10 rounded-md text-sm font-medium bg-zinc-800 text-zinc-400 hover:bg-zinc-700 transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Landing screen — no session yet */}

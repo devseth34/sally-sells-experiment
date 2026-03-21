@@ -107,6 +107,10 @@ class DBSession(Base):
     participant_name = Column(String, nullable=True)
     participant_email = Column(String, nullable=True)
 
+    # Recruitment platform tracking (prolific, mturk)
+    platform = Column(String, nullable=True)                    # "prolific", "mturk", or null
+    platform_participant_id = Column(String, nullable=True)     # Prolific PID or MTurk Worker ID
+
     # Invitation link tracking
     invitation_link_sent = Column(String, nullable=True)       # "true" if invitation URL was sent
     invitation_link_sent_at = Column(Float, nullable=True)     # Timestamp when invitation link was sent
@@ -203,6 +207,8 @@ def init_db():
             "invitation_link_sent": "ALTER TABLE sessions ADD COLUMN invitation_link_sent VARCHAR",
             "invitation_link_sent_at": "ALTER TABLE sessions ADD COLUMN invitation_link_sent_at FLOAT",
             "pending_invitation_url": "ALTER TABLE sessions ADD COLUMN pending_invitation_url VARCHAR",
+            "platform": "ALTER TABLE sessions ADD COLUMN platform VARCHAR",
+            "platform_participant_id": "ALTER TABLE sessions ADD COLUMN platform_participant_id VARCHAR",
         }
         applied = 0
         for col_name, sql in migrations.items():

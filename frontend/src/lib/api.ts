@@ -211,6 +211,8 @@ export async function createSession(
   experimentMode: boolean = false,
   participantName?: string,
   participantEmail?: string,
+  platform?: string,
+  platformParticipantId?: string,
 ): Promise<CreateSessionResponse> {
   const visitorId = getOrCreateVisitorId();
   const body: Record<string, unknown> = {
@@ -226,6 +228,12 @@ export async function createSession(
   }
   if (participantEmail) {
     body.participant_email = participantEmail;
+  }
+  if (platform) {
+    body.platform = platform;
+  }
+  if (platformParticipantId) {
+    body.platform_participant_id = platformParticipantId;
   }
   const res = await fetch(`${API_BASE}/sessions`, {
     method: "POST",

@@ -36,6 +36,8 @@ class CreateSessionRequest(BaseModel):
     experiment_mode: bool = Field(default=False, description="If true, bot is randomly assigned and arm is hidden from user")
     participant_name: Optional[str] = Field(default=None, description="Participant's name")
     participant_email: Optional[str] = Field(default=None, description="Participant's email address")
+    platform: Optional[str] = Field(default=None, description="Recruitment platform (prolific, mturk)")
+    platform_participant_id: Optional[str] = Field(default=None, description="Participant ID from the recruitment platform")
 
 
 class SendMessageRequest(BaseModel):
