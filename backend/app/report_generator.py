@@ -37,6 +37,11 @@ LIGHT_GRAY = HexColor("#e4e4e7")
 WHITE = HexColor("#ffffff")
 
 
+def _escape_xml(text: str) -> str:
+    """Escape XML-special characters for ReportLab Paragraph safety."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _get_claude_client() -> Anthropic:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -80,7 +85,7 @@ def _build_styles():
         spaceAfter=4,
     ))
     styles.add(ParagraphStyle(
-        "BodyText",
+        "ReportBody",
         parent=styles["Normal"],
         fontSize=10,
         leading=14,
@@ -271,7 +276,7 @@ def generate_pdf_report(
     story.append(Spacer(1, 12))
     story.append(Paragraph(f"Generated: {now_str}", styles["SmallGray"]))
     if filters_description:
-        story.append(Paragraph(f"Filters: {filters_description}", styles["SmallGray"]))
+        story.append(Paragraph(f"Filters: {_escape_xml(filters_description)}", styles["SmallGray"]))
     story.append(Paragraph(f"Sessions analyzed: {stats['total']}", styles["SmallGray"]))
     story.append(PageBreak())
 
@@ -285,7 +290,7 @@ def generate_pdf_report(
         f"Across {stats['total']} total sessions, {n_cds} produced valid CDS scores "
         f"(completion rate: {round(n_cds / stats['total'] * 100, 1) if stats['total'] else 0}%). "
         f"The overall mean CDS is <b>{overall_mean if overall_mean is not None else 'N/A'}</b>.",
-        styles["BodyText"],
+        styles["ReportBody"],
     ))
 
     # Per-arm summary table
@@ -339,7 +344,7 @@ def generate_pdf_report(
                 direction = "higher" if lift > 0 else "lower" if lift < 0 else "equal"
                 story.append(Paragraph(
                     f"Sally's CDS is <b>{'+' if lift > 0 else ''}{lift}</b> points {direction} than {control_label}.",
-                    styles["BodyText"],
+                    styles["ReportBody"],
                 ))
 
     # ========== PLATFORM BREAKDOWN ==========
@@ -412,7 +417,7 @@ def generate_pdf_report(
             f"Mean: {_mean(cds_values)} | "
             f"Median: {cds_values[len(cds_values)//2]} | "
             f"N = {len(cds_values)}",
-            styles["BodyText"],
+            styles["ReportBody"],
         ))
 
         # Distribution table
@@ -435,7 +440,7 @@ def generate_pdf_report(
         ]))
         story.append(t)
     else:
-        story.append(Paragraph("No CDS scores available for the selected filters.", styles["BodyText"]))
+        story.append(Paragraph("No CDS scores available for the selected filters.", styles["ReportBody"]))
 
     # ========== TRANSCRIPT INSIGHTS ==========
     if include_insights:
@@ -449,19 +454,20 @@ def generate_pdf_report(
         story.append(Spacer(1, 8))
 
         insights = _get_transcript_insights(sessions_data)
-        # Split insights into paragraphs
+        # Split insights into paragraphs.
+        # IMPORTANT: escape XML-special chars to prevent ReportLab parser crashes.
         for para in insights.split("\n"):
             para = para.strip()
             if not para:
                 continue
             if para.startswith("**") or para.startswith("#"):
-                # Heading
-                clean = para.replace("**", "").replace("#", "").strip()
+                # Heading — strip markdown, escape remaining text
+                clean = _escape_xml(para.replace("**", "").replace("#", "").strip())
                 story.append(Paragraph(clean, styles["SubHeading"]))
             elif para.startswith("- ") or para.startswith("* "):
-                story.append(Paragraph(f"  {para}", styles["BodyText"]))
+                story.append(Paragraph(f"  {_escape_xml(para)}", styles["ReportBody"]))
             else:
-                story.append(Paragraph(para, styles["BodyText"]))
+                story.append(Paragraph(_escape_xml(para), styles["ReportBody"]))
 
     # ========== FOOTER ==========
     story.append(Spacer(1, 24))
