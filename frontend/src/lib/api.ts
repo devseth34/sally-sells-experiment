@@ -266,7 +266,10 @@ export async function sendMessage(sessionId: string, content: string): Promise<S
     headers: authHeaders(),
     body: JSON.stringify({ content }),
   });
-  if (!res.ok) throw new Error(`Failed to send message: ${res.statusText}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `Failed to send message: ${res.statusText}`);
+  }
   return res.json();
 }
 

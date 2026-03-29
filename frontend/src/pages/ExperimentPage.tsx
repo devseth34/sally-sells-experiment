@@ -117,8 +117,13 @@ export function ExperimentPage() {
         setSessionEnded(true);
         setShowPostModal(true);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to send message:", err);
+      // If session timed out, trigger the rating flow
+      if (err?.message?.includes("timed out") || err?.message?.includes("not active")) {
+        setSessionEnded(true);
+        setShowPostModal(true);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -325,6 +330,30 @@ export function ExperimentPage() {
             )}
             <div ref={messagesEndRef} />
           </div>
+
+          {/* Finish & Rate button — Sally: after COMMITMENT phase; Hank/Ivy: after 5 user turns (~11 messages) */}
+          {!sessionEnded && (
+            (assignedArm === "sally_nepq" && currentPhase === "COMMITMENT") ||
+            (assignedArm !== "sally_nepq" && messages.length >= 11)
+          ) && (
+            <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-950/80 flex justify-center">
+              <button
+                onClick={async () => {
+                  if (sessionId) {
+                    try {
+                      await endSession(sessionId);
+                    } catch { /* ignore */ }
+                  }
+                  setSessionEnded(true);
+                  setShowPostModal(true);
+                }}
+                disabled={isLoading}
+                className="h-8 px-4 rounded-md text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-50"
+              >
+                Finish & Rate This Conversation
+              </button>
+            </div>
+          )}
 
           <ChatInput
             onSend={handleSendMessage}

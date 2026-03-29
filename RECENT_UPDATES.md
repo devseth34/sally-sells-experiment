@@ -1,4 +1,95 @@
-# Recent Updates — Memory Deployment (Short-term & Long-term)
+# Recent Updates — Mortgage AI Academy Reframe, Prolific/MTurk Integration & CDS Rating Flow
+
+Date: 2026-03-22
+
+## Summary
+
+A major batch of changes landed between **Mar 20–21, 2026** covering three broad areas:
+
+1. **Full product reframe** — all three bots (Sally, Hank, Ivy) were rewritten from selling a $10K workshop to promoting the **100x AI Academy** for mortgage professionals.
+2. **CDS rating gate** — the invitation link is now locked behind a post-conviction 1–10 rating modal (PostConvictionModal) on both web and SMS before the URL is revealed.
+3. **Prolific/MTurk experiment flow** — a complete participant-tracking pipeline was added, including platform detection, participant ID capture, completion codes, name/email collection, and a CSV export for research use.
+
+---
+
+## Detailed Changes by Commit
+
+### `bc0763a` — Fix experiment page: gate invitation link behind CDS rating modal *(Mar 21)*
+- `ExperimentPage.tsx` was using a raw `<a>` tag for the invitation button, bypassing the rating flow entirely.
+- Fixed by passing an `onInvitationClick` handler down to `MessageBubble`, so tapping the invitation button on the experiment page now opens the **PostConvictionModal** first, then reveals the Prolific/MTurk completion code.
+- **File changed:** `frontend/src/pages/ExperimentPage.tsx`
+
+### `538a9b2` — Add vercel.json rewrite for SPA client-side routing *(Mar 21)*
+- Added `frontend/vercel.json` with a catch-all rewrite (`/*` → `/index.html`) so direct navigation to `/experiment` (used by Prolific/MTurk participant links) no longer returns a 404.
+- **File added:** `frontend/vercel.json`
+
+### `c66801a` — Add Prolific/MTurk completion code flow and platform tracking *(Mar 21)*
+- Query params `?platform=prolific&pid=XXXXX` (or `mturk`) are now read on page load and stored on the session.
+- After the CDS rating modal completes, participants see a **completion code screen** showing their session ID as a copyable code to paste back into Prolific/MTurk.
+- Admin dashboard and CSV export now include `platform` and `participant_id` columns.
+- **Files changed:** `backend/app/database.py`, `backend/app/main.py`, `backend/app/schemas.py`, `frontend/src/lib/api.ts`, `frontend/src/pages/ExperimentPage.tsx`
+
+### `3a59c85` — Add name/email collection, fix CDS question mismatch, add CSV download to admin *(Mar 20)*
+- The pre-survey (`ExperimentSurveyModal`) now collects **participant name and email** before the conversation starts.
+- **CDS accuracy fix:** the pre-survey question was asking about a "$10K investment" while the post-survey asked about mortgage AI interest — both questions now ask about mortgage AI interest for a valid delta score.
+- Admin dashboard (`AdminPage.tsx`) shows name/email in the sessions table and gained a **CSV download button** exporting participant info, arm, channel, and invitation link status.
+- **Files changed:** `backend/app/database.py`, `backend/app/main.py`, `backend/app/schemas.py`, `frontend/src/components/chat/ExperimentSurveyModal.tsx`, `frontend/src/lib/api.ts`, `frontend/src/pages/AdminPage.tsx`, `frontend/src/pages/ExperimentPage.tsx`
+
+### `e5c31cf` — Update pre-chat survey question to match mortgage AI framing *(Mar 20)*
+- `ConvictionModal.tsx`: updated the pre-chat survey question wording to align with the new mortgage AI framing (was generic persuasion/investment framing).
+- **File changed:** `frontend/src/components/chat/ConvictionModal.tsx`
+
+### `72e9fd9` — Fix: add hidePhase prop to MessageBubble *(Mar 20)*
+- `MessageBubble.tsx` was missing a `hidePhase` prop used by `ExperimentPage` to suppress internal phase labels from participant-facing views.
+- **File changed:** `frontend/src/components/chat/MessageBubble.tsx`
+
+### `7ec3cf8` — Gate invitation link behind CDS rating on web and SMS *(Mar 20)*
+- **Web:** clicking the invitation button now triggers a 1–10 rating modal. After rating, the CDS delta is displayed and a "Request Your Invitation" button opens the URL.
+- **SMS:** a new `rating_before_link` state strips the invitation URL from the bot's message, asks for a 1–10 rating, then sends the CDS result + invitation link as a follow-up.
+- **Database:** added `pending_invitation_url` column to `sessions` table to store the gated URL server-side.
+- **Files changed:** `backend/app/database.py`, `backend/app/sms.py`, `frontend/src/components/chat/MessageBubble.tsx`, `frontend/src/components/chat/PostConvictionModal.tsx`, `frontend/src/pages/ChatPage.tsx`
+
+### `ab3e8e7` — Render invitation link as purple button in chat *(Mar 20)*
+- `MessageBubble.tsx`'s `renderWithLinks` helper now detects `100x.inc/academy` URLs and renders them as a styled **"Request Your Invitation"** purple button, consistent with existing Stripe/TidyCal button patterns.
+- **File changed:** `frontend/src/components/chat/MessageBubble.tsx`
+
+### `8bd65ac` — Rename `price_stated` → `opp_presented` in agent.py *(Mar 20)*
+- Cleanup: the local variable in `agent.py` was still named `price_stated` after the dict key was renamed to `opportunity_presented` during the reframe.
+- **File changed:** `backend/app/agent.py`
+
+### `a84eb7f` — Reframe all bots from workshop sales to mortgage AI Academy *(Mar 20)*
+The largest commit of this batch — a full product pivot across all three bots and supporting infrastructure.
+
+**Bot changes (Sally, Hank, Ivy):**
+- Single CTA changed to `[INVITATION_LINK]` only — no paywall, no Stripe/TidyCal references in prompts.
+- Removed email/phone collection from bot flows (the landing page handles capture).
+- Reframed conversations for **mortgage industry AI adoption** instead of a $10K workshop.
+- Stripe/TidyCal infrastructure code preserved for future use but disabled from prompts.
+- `fact_sheet.txt` injection disabled (legacy workshop content).
+
+**Sally-specific:**
+- Simplified COMMITMENT phase: just share the invitation link.
+- Removed ~100 lines of contact collection branching.
+- OWNERSHIP phase updated to present an "opportunity" rather than an "offer."
+- Circuit breaker, playbooks, and phase definitions updated accordingly.
+- `price_stated` criterion renamed to `opportunity_presented`.
+
+**SMS:** pre/post survey questions updated for mortgage framing.
+
+**Files changed:** `agent.py`, `bots/base.py`, `bots/hank.py`, `bots/ivy.py`, `followup.py`, `invitation.py`, `layers/comprehension.py`, `layers/decision.py`, `layers/response.py`, `main.py`, `phase_definitions.py`, `playbooks.py`, `sms.py` *(13 files, net −193 lines)*
+
+---
+
+## Key Architectural Notes
+
+- **CDS flow is now universal:** both web (`ChatPage`, `ExperimentPage`) and SMS gate the invitation URL behind the rating modal — results are stored on the session so the delta score can be computed and displayed.
+- **Vercel SPA routing** is now configured; `/experiment` is the canonical Prolific/MTurk entry point.
+- **Stripe/TidyCal code is preserved** but not surfaced in any bot prompt — can be re-enabled without a major refactor.
+- **Admin CSV export** is the primary data extraction tool for research analysis.
+
+---
+
+# Previous Updates — Memory Deployment (Short-term & Long-term)
 
 Date: 2026-03-13
 

@@ -66,6 +66,17 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sally.api")
 
+
+def _arm_to_display_name(arm_str: str | None) -> str:
+    """Convert arm string to display name for transcripts."""
+    _MAP = {
+        "sally_nepq": "Sally",
+        "hank_hypes": "Hank",
+        "ivy_informs": "Ivy",
+    }
+    return _MAP.get(arm_str or "", "Bot")
+
+
 app = FastAPI(title="Sally Sells API", version="2.0.0")
 
 app.add_middleware(
@@ -622,9 +633,24 @@ def create_session(
     if request.selected_bot is not None:
         arm = request.selected_bot
     else:
+        # Balanced allocation: assign to the arm with fewest experiment sessions
+        arm_counts = {}
+        for a in BotArm:
+            count = db.query(DBSession).filter(
+                DBSession.assigned_arm == a.value,
+                DBSession.experiment_mode == "true",
+            ).count()
+            arm_counts[a] = count
+
+        min_count = min(arm_counts.values())
+        least_used = [a for a, c in arm_counts.items() if c == min_count]
+
         import random as _random
-        arm = _random.choice(list(BotArm))
-        logger.info(f"[Session {session_id}] Experiment mode: randomly assigned to {arm.value}")
+        arm = _random.choice(least_used)
+        logger.info(
+            f"[Session {session_id}] Experiment mode: balanced assignment to {arm.value} "
+            f"(counts: {', '.join(f'{a.value}={c}' for a, c in arm_counts.items())})"
+        )
 
     visitor_id = request.visitor_id
     initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
@@ -895,6 +921,21 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         raise HTTPException(status_code=400, detail="Session is no longer active")
 
     now = time.time()
+
+    # Auto-timeout: if last message was >48 hours ago, end the session
+    TIMEOUT_SECONDS = 172800  # 48 hours
+    last_msg = (
+        db.query(DBMessage)
+        .filter(DBMessage.session_id == session_id)
+        .order_by(DBMessage.timestamp.desc())
+        .first()
+    )
+    if last_msg and (now - last_msg.timestamp) > TIMEOUT_SECONDS:
+        logger.info(f"[Session {session_id}] Auto-timeout: {now - last_msg.timestamp:.0f}s since last message")
+        db_session.status = "abandoned"
+        db_session.end_time = now
+        db.commit()
+        raise HTTPException(status_code=400, detail="Session timed out due to inactivity.")
     arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
     is_sally = arm == BotArm.SALLY_NEPQ
 
@@ -1165,8 +1206,9 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
                 .all()
             )
             transcript_lines = []
+            arm_name = BOT_DISPLAY_NAMES.get(arm, "Bot")
             for m in all_msgs:
-                role_label = "Sally" if m.role == "assistant" else "Prospect"
+                role_label = arm_name if m.role == "assistant" else "Prospect"
                 transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
             transcript_lines.append(f"[{current_phase.value if current_phase else current_phase_str}] Prospect: {request.content}")
             transcript_text = "\n".join(transcript_lines)
@@ -1184,8 +1226,30 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         except Exception as e:
             logger.error(f"[Session {session_id}] Escalation trigger error: {e}")
 
-    # Replace [PAYMENT_LINK] placeholder with real Stripe checkout URL if present
+    # --- Experiment-mode fallback: inject invitation link after N turns ---
     response_text = result["response_text"]
+    EXPERIMENT_LINK_TURN_THRESHOLD = int(os.getenv("EXPERIMENT_LINK_TURN_THRESHOLD", "10"))
+    if (
+        getattr(db_session, 'experiment_mode', None) == "true"
+        and db_session.turn_number >= EXPERIMENT_LINK_TURN_THRESHOLD
+        and not getattr(db_session, 'invitation_link_sent', None)
+        and "100x.inc/academy" not in response_text
+        and "[INVITATION_LINK]" not in response_text
+    ):
+        from app.invitation import build_invitation_url
+        invitation_url = build_invitation_url(
+            session_id=session_id,
+            arm=arm.value,
+            channel=getattr(db_session, 'channel', 'web') or 'web',
+        )
+        link_nudge = (
+            f"\n\nBy the way, if you'd like to learn more about the AI Academy, "
+            f"you can request your invitation here: {invitation_url}"
+        )
+        response_text += link_nudge
+        logger.info(f"[Session {session_id}] Experiment fallback: injected invitation link at turn {db_session.turn_number}")
+
+    # Replace [PAYMENT_LINK] placeholder with real Stripe checkout URL if present
     if "[PAYMENT_LINK]" in response_text:
         try:
             stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -1640,6 +1704,49 @@ def get_cds_summary(db: DBSessionType = Depends(get_db)):
             "lift_target": 0.3,
         },
     }
+
+
+# --- Admin Cleanup ---
+
+@app.post("/api/admin/cleanup-stale-sessions")
+def cleanup_stale_sessions(db: DBSessionType = Depends(get_db)):
+    """End sessions that have been inactive for >48 hours."""
+    TIMEOUT_SECONDS = 172800  # 48 hours
+    now = time.time()
+
+    active_sessions = db.query(DBSession).filter(DBSession.status == "active").all()
+    cleaned = 0
+    for s in active_sessions:
+        last_msg = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == s.id)
+            .order_by(DBMessage.timestamp.desc())
+            .first()
+        )
+        last_activity = last_msg.timestamp if last_msg else s.start_time
+        if last_activity and (now - last_activity) > TIMEOUT_SECONDS:
+            s.status = "abandoned"
+            s.end_time = now
+            cleaned += 1
+
+            # Trigger memory extraction for abandoned sessions
+            try:
+                msgs = db.query(DBMessage).filter(
+                    DBMessage.session_id == s.id
+                ).order_by(DBMessage.timestamp).all()
+                transcript = [{"role": m.role, "content": m.content, "phase": m.phase} for m in msgs]
+                if len(transcript) > 2:
+                    threading.Thread(
+                        target=lambda sid=s.id, t=transcript, p=s.prospect_profile, v=s.visitor_id: (
+                            extract_memory_from_session(sid, t, p),
+                        ),
+                        daemon=True,
+                    ).start()
+            except Exception as e:
+                logger.error(f"[Cleanup] Memory extraction failed for {s.id}: {e}")
+
+    db.commit()
+    return {"cleaned": cleaned, "total_active_checked": len(active_sessions)}
 
 
 # --- Admin Analytics ---
@@ -2176,8 +2283,9 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             .all()
         )
         transcript_lines = []
+        arm_name = _arm_to_display_name(s.assigned_arm)
         for m in messages:
-            role_label = "Sally" if m.role == "assistant" else "Prospect"
+            role_label = arm_name if m.role == "assistant" else "Prospect"
             transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
         transcript = "\n".join(transcript_lines)
 

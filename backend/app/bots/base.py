@@ -115,15 +115,47 @@ class ControlBot:
             system += f"\n\n{memory_context}"
             system += "\nUSE THIS MEMORY NATURALLY. Reference prior conversations when relevant. Never say 'I remember' or 'from last time' — just know it and use it."
 
-        # Build messages array for Claude
-        # NOTE: conversation_history already includes the current user_message
-        # (appended in main.py before calling route_message), so we do NOT
-        # append user_message again — that would create consecutive user turns
-        # which violates the Claude API alternating-roles requirement.
+        # Build messages array for Claude.
+        # conversation_history already includes the current user_message
+        # (appended in main.py before calling route_message).
+        #
+        # CRITICAL: Claude API requires messages[0].role == "user".
+        # conversation_history starts with the greeting (role=assistant),
+        # so we must strip leading assistant messages. We fold them into
+        # the system prompt as prior context instead.
         messages = []
+        leading_assistant_lines = []
+        past_first_user = False
+
         for msg in conversation_history:
             role = "user" if msg["role"] == "user" else "assistant"
+            if not past_first_user and role == "assistant":
+                # Collect leading assistant messages (greeting, switch notices)
+                leading_assistant_lines.append(msg["content"])
+                continue
+            past_first_user = True
             messages.append({"role": role, "content": msg["content"]})
+
+        # Inject leading assistant context into system prompt
+        if leading_assistant_lines:
+            greeting_context = "\n".join(leading_assistant_lines)
+            system += f"\n\nYOUR OPENING MESSAGE (already sent to the prospect):\n{greeting_context}"
+
+        # Safety: if somehow messages is empty or starts wrong, add a
+        # synthetic user turn so the API call doesn't fail
+        if not messages or messages[0]["role"] != "user":
+            logger.warning(f"[{self.name}] Empty or malformed messages array — inserting synthetic user turn")
+            messages.insert(0, {"role": "user", "content": "(The prospect has just joined the conversation.)"})
+
+        # Deduplicate consecutive same-role messages (safety net)
+        deduped = [messages[0]]
+        for m in messages[1:]:
+            if m["role"] == deduped[-1]["role"]:
+                # Merge consecutive same-role messages
+                deduped[-1]["content"] += "\n" + m["content"]
+            else:
+                deduped.append(m)
+        messages = deduped
 
         try:
             response = get_client().messages.create(
@@ -134,7 +166,8 @@ class ControlBot:
             )
             response_text = response.content[0].text.strip()
         except Exception as e:
-            logger.error(f"[{self.name}] API error: {e}")
+            logger.error(f"[{self.name}] API error: {e}", exc_info=True)
+            logger.error(f"[{self.name}] Messages payload had {len(messages)} messages, first role: {messages[0]['role'] if messages else 'EMPTY'}")
             response_text = self._fallback_response()
 
         # Strip quotation marks (same as response.py pattern)
@@ -191,20 +224,26 @@ class ControlBot:
 
     def _should_end(self, user_message: str, bot_response: str, history_length: int) -> bool:
         """
-        End-detection for control bots. Very conservative — only ends when
-        the user explicitly asks to END THE CONVERSATION, not when they
-        express disinterest in the product (that's just an objection to handle).
-
-        Sally has her own sophisticated end logic in Layer 2.
+        End-detection for control bots.
+        Detects explicit exit intent from the user AND safety cap.
         """
-        # Safety cap only: prevent truly runaway sessions (100 messages = ~50 exchanges)
+        # Safety cap: prevent runaway sessions
         if history_length > 100:
             return True
 
-        # Never auto-end based on message content — the user controls when
-        # the conversation ends via the UI "New Session" button or by
-        # closing the tab. Phrases like "not interested" or "no thanks"
-        # are product objections, not conversation-exit signals.
+        # Detect explicit exit intent
+        exit_phrases = [
+            "end", "finish", "done", "goodbye", "bye", "stop",
+            "quit", "exit", "i'm done", "im done", "end chat",
+            "end conversation", "i want to stop", "that's all",
+            "thats all", "no more", "wrap up", "i'm leaving",
+            "close", "terminate",
+        ]
+        msg_lower = user_message.lower().strip().rstrip(".,!?")
+        for phrase in exit_phrases:
+            if msg_lower == phrase or msg_lower.startswith(phrase + " ") or msg_lower.endswith(" " + phrase):
+                return True
+
         return False
 
     def _fallback_response(self) -> str:
