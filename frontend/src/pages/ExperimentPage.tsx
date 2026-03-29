@@ -24,7 +24,7 @@ export function ExperimentPage() {
 
   // Capture platform params from URL (e.g., ?platform=prolific&pid=XXXXX)
   const urlParams = new URLSearchParams(window.location.search);
-  const platform = urlParams.get("platform") || undefined;
+  const platform = urlParams.get("platform") || "organic";
   const platformParticipantId = urlParams.get("pid") || undefined;
 
   // Bot switching state

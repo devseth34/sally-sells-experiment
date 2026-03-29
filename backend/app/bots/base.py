@@ -97,11 +97,14 @@ class ControlBot:
         memory_context: str = "",
         session_id: str = "",
         channel: str = "web",
+        platform: str = "",
     ) -> dict:
         """
         Generate a response using a single Claude API call.
         Enhanced with turn tracking, memory context, and conversation capping.
         """
+        self._current_platform = platform
+
         # Cap conversation history for context window efficiency
         if len(conversation_history) > 20:
             conversation_history = conversation_history[-20:]
@@ -217,6 +220,7 @@ class ControlBot:
                 session_id=session_id,
                 arm=arm or self.name,
                 channel=channel,
+                platform=getattr(self, '_current_platform', ''),
             )
             response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
 

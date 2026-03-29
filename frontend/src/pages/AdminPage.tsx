@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Header } from "../components/layout/Header";
 import { Card, CardHeader, CardContent, Badge } from "../components/ui";
-import { getAdminAnalytics, getExportCsvUrl } from "../lib/api";
+import { getAdminAnalytics, getExportCsvUrl, getExportPdfUrl } from "../lib/api";
 import type { AdminAnalyticsResponse, AdminSession } from "../lib/api";
 import { formatDate, formatDuration } from "../lib/utils";
 import {
@@ -97,6 +97,13 @@ export function AdminPage() {
   const [data, setData] = useState<AdminAnalyticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Filter state
+  const [filterPlatform, setFilterPlatform] = useState<string>("");
+  const [filterArm, setFilterArm] = useState<string>("");
+  const [filterStartDate, setFilterStartDate] = useState<string>("");
+  const [filterEndDate, setFilterEndDate] = useState<string>("");
+  const [filterCdsOnly, setFilterCdsOnly] = useState(false);
+
   const fetchData = async () => {
     try {
       const d = await getAdminAnalytics();
@@ -164,13 +171,82 @@ export function AdminPage() {
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-lg font-semibold">Experiment Dashboard</h1>
-          <a
-            href={getExportCsvUrl()}
-            download
-            className="h-9 px-4 rounded-md text-sm font-medium bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-zinc-700 transition-colors inline-flex items-center gap-2"
+        </div>
+
+        {/* Filter Controls */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <select
+            value={filterPlatform}
+            onChange={(e) => setFilterPlatform(e.target.value)}
+            className="h-8 px-2 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-200"
           >
-            Download CSV Report
-          </a>
+            <option value="">All Platforms</option>
+            <option value="prolific">Prolific</option>
+            <option value="mturk">MTurk</option>
+            <option value="meta">Meta Ads</option>
+            <option value="organic">Organic</option>
+          </select>
+          <select
+            value={filterArm}
+            onChange={(e) => setFilterArm(e.target.value)}
+            className="h-8 px-2 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-200"
+          >
+            <option value="">All Arms</option>
+            <option value="sally_nepq">Sally</option>
+            <option value="hank_hypes">Hank</option>
+            <option value="ivy_informs">Ivy</option>
+          </select>
+          <input
+            type="date"
+            value={filterStartDate}
+            onChange={(e) => setFilterStartDate(e.target.value)}
+            placeholder="Start date"
+            className="h-8 px-2 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-200"
+          />
+          <input
+            type="date"
+            value={filterEndDate}
+            onChange={(e) => setFilterEndDate(e.target.value)}
+            placeholder="End date"
+            className="h-8 px-2 rounded-md text-xs bg-zinc-800 border border-zinc-700 text-zinc-200"
+          />
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={filterCdsOnly}
+              onChange={(e) => setFilterCdsOnly(e.target.checked)}
+              className="rounded bg-zinc-800 border-zinc-600"
+            />
+            CDS only
+          </label>
+          <div className="flex gap-2 ml-auto">
+            <a
+              href={getExportCsvUrl({
+                platform: filterPlatform || undefined,
+                arm: filterArm || undefined,
+                cds_only: filterCdsOnly || undefined,
+                start_date: filterStartDate || undefined,
+                end_date: filterEndDate || undefined,
+              })}
+              download
+              className="h-8 px-3 rounded-md text-xs font-medium bg-zinc-800 text-zinc-200 hover:bg-zinc-700 border border-zinc-700 transition-colors inline-flex items-center"
+            >
+              CSV
+            </a>
+            <a
+              href={getExportPdfUrl({
+                platform: filterPlatform || undefined,
+                arm: filterArm || undefined,
+                cds_only: filterCdsOnly || undefined,
+                start_date: filterStartDate || undefined,
+                end_date: filterEndDate || undefined,
+              })}
+              download
+              className="h-8 px-3 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors inline-flex items-center"
+            >
+              PDF Report
+            </a>
+          </div>
         </div>
 
         {/* Section A: Overview Cards */}
@@ -394,6 +470,32 @@ export function AdminPage() {
           </Card>
         )}
 
+        {/* Section E2: Platform Breakdown */}
+        {data.platforms && Object.keys(data.platforms).length > 0 && (
+          <Card>
+            <CardHeader>
+              <h2 className="text-sm font-semibold text-zinc-200">
+                Platform Breakdown
+              </h2>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-4 gap-4">
+                {Object.entries(data.platforms).map(([plat, pdata]: [string, any]) => (
+                  <div key={plat} className="bg-zinc-900 rounded-lg p-3 border border-zinc-800">
+                    <p className="text-xs text-zinc-500 uppercase tracking-wider mb-1">
+                      {plat.charAt(0).toUpperCase() + plat.slice(1)}
+                    </p>
+                    <p className="text-lg font-bold text-zinc-100">{pdata.total}</p>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      CDS: {pdata.mean_cds ?? "\u2014"} (n={pdata.has_cds})
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Section F: Recent Sessions Table */}
         <Card>
           <CardHeader>
@@ -411,6 +513,7 @@ export function AdminPage() {
                     <th className="text-left py-2 px-2">Email</th>
                     <th className="text-left py-2 px-2">Arm</th>
                     <th className="text-left py-2 px-2">Channel</th>
+                    <th className="text-left py-2 px-2">Platform</th>
                     <th className="text-left py-2 px-2">Status</th>
                     <th className="text-right py-2 px-2">Pre</th>
                     <th className="text-right py-2 px-2">Post</th>
@@ -441,6 +544,9 @@ export function AdminPage() {
                       </td>
                       <td className="py-2 px-2 text-zinc-400">
                         {s.channel || "web"}
+                      </td>
+                      <td className="py-2 px-2 text-zinc-400">
+                        {s.platform || "organic"}
                       </td>
                       <td className="py-2 px-2">
                         <Badge

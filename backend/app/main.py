@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session as DBSessionType
 from sqlalchemy import func, case
 import uuid
@@ -636,9 +636,13 @@ def create_session(
         # Balanced allocation: assign to the arm with fewest experiment sessions
         arm_counts = {}
         for a in BotArm:
+            # Only count sessions from the current batch (last 7 days)
+            # so old skewed data doesn't affect new allocation
+            batch_cutoff = now - (7 * 86400)  # 7 days ago
             count = db.query(DBSession).filter(
                 DBSession.assigned_arm == a.value,
                 DBSession.experiment_mode == "true",
+                DBSession.start_time > batch_cutoff,
             ).count()
             arm_counts[a] = count
 
@@ -1032,6 +1036,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             # Shared params for link tracking:
             session_id=session_id,
             channel=getattr(db_session, 'channel', 'web') or 'web',
+            platform=getattr(db_session, 'platform', '') or '',
         )
     except Exception as e:
         logger.error(f"[Session {session_id}] Engine error: {e}")
@@ -1241,6 +1246,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             session_id=session_id,
             arm=arm.value,
             channel=getattr(db_session, 'channel', 'web') or 'web',
+            platform=getattr(db_session, 'platform', '') or '',
         )
         link_nudge = (
             f"\n\nBy the way, if you'd like to learn more about the AI Academy, "
@@ -1317,6 +1323,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
             session_id=session_id,
             arm=arm.value,
             channel=getattr(db_session, 'channel', 'web') or 'web',
+            platform=getattr(db_session, 'platform', '') or '',
         )
         response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
 
@@ -1788,6 +1795,19 @@ def get_admin_analytics(db: DBSessionType = Depends(get_db)):
         .all()
     )
 
+    # Platform breakdown (prolific, mturk, meta, organic)
+    platform_counts = (
+        db.query(
+            DBSession.platform,
+            func.count(DBSession.id).label("total"),
+            func.count(case((DBSession.cds_score.isnot(None), 1))).label("has_cds"),
+            func.avg(DBSession.cds_score).label("mean_cds"),
+        )
+        .filter(experiment_filter)
+        .group_by(DBSession.platform)
+        .all()
+    )
+
     # Follow-up stats
     followup_stats = (
         db.query(
@@ -1873,6 +1893,14 @@ def get_admin_analytics(db: DBSessionType = Depends(get_db)):
         "arms": arms_data,
         "sally_lift": lifts,
         "channels": {row.channel or "unknown": row.count for row in channel_counts},
+        "platforms": {
+            (row.platform or "organic"): {
+                "total": row.total,
+                "has_cds": row.has_cds,
+                "mean_cds": round(float(row.mean_cds), 2) if row.mean_cds else None,
+            }
+            for row in platform_counts
+        },
         "followups": {
             "sessions_with_followups": followup_stats.sessions_with_followups if followup_stats else 0,
             "avg_followups_per_session": round(float(followup_stats.avg_followups), 1) if followup_stats and followup_stats.avg_followups else 0,
@@ -2250,10 +2278,52 @@ def submit_post_conviction(session_id: str, request: PostConvictionRequest, db: 
 # --- CSV Export ---
 
 @app.get("/api/export/csv")
-def export_csv(db: DBSessionType = Depends(get_db)):
-    """Export all sessions + transcripts as a CSV for research analysis."""
-    from datetime import date as _date
-    sessions = db.query(DBSession).order_by(DBSession.start_time.desc()).all()
+def export_csv(
+    db: DBSessionType = Depends(get_db),
+    # Filters
+    platform: Optional[str] = Query(None, description="Filter by platform: prolific, mturk, meta, organic"),
+    arm: Optional[str] = Query(None, description="Filter by arm: sally_nepq, hank_hypes, ivy_informs"),
+    status: Optional[str] = Query(None, description="Filter by status: active, completed, abandoned, switched"),
+    cds_only: bool = Query(False, description="Only include sessions with CDS scores"),
+    start_date: Optional[str] = Query(None, description="Filter sessions starting after this date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="Filter sessions starting before this date (YYYY-MM-DD)"),
+    experiment_only: bool = Query(True, description="Only include experiment mode sessions"),
+):
+    """Export sessions + transcripts as CSV with optional filters."""
+    from datetime import date as _date, datetime
+
+    query = db.query(DBSession)
+
+    # Apply filters
+    if experiment_only:
+        query = query.filter(DBSession.experiment_mode == "true")
+    if platform:
+        if platform == "organic":
+            query = query.filter(
+                (DBSession.platform == None) | (DBSession.platform == "") | (DBSession.platform == "organic")
+            )
+        else:
+            query = query.filter(DBSession.platform == platform)
+    if arm:
+        query = query.filter(DBSession.assigned_arm == arm)
+    if status:
+        query = query.filter(DBSession.status == status)
+    if cds_only:
+        query = query.filter(DBSession.cds_score.isnot(None))
+    if start_date:
+        try:
+            start_ts = datetime.strptime(start_date, "%Y-%m-%d").timestamp()
+            query = query.filter(DBSession.start_time >= start_ts)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date must be YYYY-MM-DD format")
+    if end_date:
+        try:
+            end_ts = datetime.strptime(end_date, "%Y-%m-%d").timestamp() + 86400  # end of day
+            query = query.filter(DBSession.start_time < end_ts)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_date must be YYYY-MM-DD format")
+
+    sessions = query.order_by(DBSession.start_time.desc()).all()
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -2269,13 +2339,11 @@ def export_csv(db: DBSessionType = Depends(get_db)):
     ])
 
     for s in sessions:
-        # Parse profile for prospect info
         try:
             profile = json.loads(s.prospect_profile or "{}")
         except json.JSONDecodeError:
             profile = {}
 
-        # Build transcript
         messages = (
             db.query(DBMessage)
             .filter(DBMessage.session_id == s.id)
@@ -2297,7 +2365,7 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             s.id,
             getattr(s, 'participant_name', None) or "",
             getattr(s, 'participant_email', None) or "",
-            getattr(s, 'platform', None) or "",
+            getattr(s, 'platform', None) or "organic",
             getattr(s, 'platform_participant_id', None) or "",
             getattr(s, 'assigned_arm', None) or "",
             getattr(s, 'channel', None) or "",
@@ -2319,12 +2387,144 @@ def export_csv(db: DBSessionType = Depends(get_db)):
             transcript,
         ])
 
-    today_str = _date.today().isoformat()
+    # Build filename reflecting active filters
+    parts = ["sally_sells_export"]
+    if platform:
+        parts.append(platform)
+    if arm:
+        parts.append(arm)
+    if cds_only:
+        parts.append("cds_only")
+    if start_date:
+        parts.append(f"from_{start_date}")
+    if end_date:
+        parts.append(f"to_{end_date}")
+    parts.append(_date.today().isoformat())
+    filename = "_".join(parts) + ".csv"
+
     output.seek(0)
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=sally_sells_export_{today_str}.csv"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# --- PDF Report Export ---
+
+@app.get("/api/export/pdf")
+def export_pdf(
+    db: DBSessionType = Depends(get_db),
+    # Same filters as CSV
+    platform: Optional[str] = Query(None, description="Filter by platform"),
+    arm: Optional[str] = Query(None, description="Filter by arm"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    cds_only: bool = Query(False, description="Only sessions with CDS scores"),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    experiment_only: bool = Query(True, description="Experiment mode only"),
+    include_insights: bool = Query(True, description="Include AI transcript analysis"),
+):
+    """Generate a PDF research report with CDS analytics and transcript insights."""
+    from datetime import datetime, date as _date
+    from app.report_generator import generate_pdf_report
+
+    # Build query with same filter logic as CSV
+    query = db.query(DBSession)
+    if experiment_only:
+        query = query.filter(DBSession.experiment_mode == "true")
+    if platform:
+        if platform == "organic":
+            query = query.filter(
+                (DBSession.platform == None) | (DBSession.platform == "") | (DBSession.platform == "organic")
+            )
+        else:
+            query = query.filter(DBSession.platform == platform)
+    if arm:
+        query = query.filter(DBSession.assigned_arm == arm)
+    if status:
+        query = query.filter(DBSession.status == status)
+    if cds_only:
+        query = query.filter(DBSession.cds_score.isnot(None))
+    if start_date:
+        try:
+            start_ts = datetime.strptime(start_date, "%Y-%m-%d").timestamp()
+            query = query.filter(DBSession.start_time >= start_ts)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date must be YYYY-MM-DD")
+    if end_date:
+        try:
+            end_ts = datetime.strptime(end_date, "%Y-%m-%d").timestamp() + 86400
+            query = query.filter(DBSession.start_time < end_ts)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="end_date must be YYYY-MM-DD")
+
+    sessions = query.order_by(DBSession.start_time.desc()).all()
+
+    # Build session data dicts (with transcripts for insight generation)
+    sessions_data = []
+    for s in sessions:
+        try:
+            profile = json.loads(s.prospect_profile or "{}")
+        except json.JSONDecodeError:
+            profile = {}
+
+        messages = (
+            db.query(DBMessage)
+            .filter(DBMessage.session_id == s.id)
+            .order_by(DBMessage.timestamp)
+            .all()
+        )
+        arm_name = _arm_to_display_name(s.assigned_arm)
+        transcript_lines = []
+        for m in messages:
+            role_label = arm_name if m.role == "assistant" else "Prospect"
+            transcript_lines.append(f"[{m.phase}] {role_label}: {m.content}")
+
+        sessions_data.append({
+            "session_id": s.id,
+            "assigned_arm": s.assigned_arm,
+            "platform": getattr(s, "platform", None) or "organic",
+            "status": s.status,
+            "pre_conviction": s.pre_conviction,
+            "post_conviction": s.post_conviction,
+            "cds_score": s.cds_score,
+            "message_count": s.message_count,
+            "turn_number": s.turn_number,
+            "current_phase": s.current_phase,
+            "start_time": s.start_time,
+            "end_time": s.end_time,
+            "transcript": "\n".join(transcript_lines),
+        })
+
+    # Build filter description for report header
+    filter_parts = []
+    if platform:
+        filter_parts.append(f"platform={platform}")
+    if arm:
+        filter_parts.append(f"arm={arm}")
+    if cds_only:
+        filter_parts.append("CDS only")
+    if start_date:
+        filter_parts.append(f"from {start_date}")
+    if end_date:
+        filter_parts.append(f"to {end_date}")
+    filters_description = ", ".join(filter_parts) if filter_parts else "All experiment sessions"
+
+    # Generate PDF
+    pdf_bytes = generate_pdf_report(
+        sessions_data=sessions_data,
+        filters_description=filters_description,
+        include_insights=include_insights,
+    )
+
+    today_str = _date.today().isoformat()
+    filename = f"sally_sells_report_{today_str}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 

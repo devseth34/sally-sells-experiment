@@ -14,3 +14,4 @@ bcrypt
 python-jose[cryptography]
 python-multipart
 twilio
+reportlab

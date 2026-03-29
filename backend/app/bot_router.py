@@ -55,6 +55,7 @@ def route_message(
     # Shared params for link tracking:
     session_id: str = "",
     channel: str = "web",
+    platform: str = "",
 ) -> dict:
     """
     Route a message to the correct bot.
@@ -83,10 +84,10 @@ def route_message(
         )
 
     elif arm == BotArm.HANK_HYPES:
-        return _hank.respond(user_message, conversation_history, memory_context=memory_context, session_id=session_id, channel=channel)
+        return _hank.respond(user_message, conversation_history, memory_context=memory_context, session_id=session_id, channel=channel, platform=platform)
 
     elif arm == BotArm.IVY_INFORMS:
-        return _ivy.respond(user_message, conversation_history, memory_context=memory_context, session_id=session_id, channel=channel)
+        return _ivy.respond(user_message, conversation_history, memory_context=memory_context, session_id=session_id, channel=channel, platform=platform)
 
     else:
         raise ValueError(f"Unknown arm: {arm}")

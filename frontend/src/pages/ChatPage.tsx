@@ -10,6 +10,10 @@ import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
 
 export function ChatPage() {
+  // Capture platform from URL (e.g., ?platform=meta)
+  const urlParams = new URLSearchParams(window.location.search);
+  const platform = urlParams.get("platform") || "organic";
+
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentPhase, setCurrentPhase] = useState("CONNECTION");
   const [messages, setMessages] = useState<MessageResponse[]>([]);
@@ -69,7 +73,7 @@ export function ChatPage() {
   const handleStartSession = async (score: number, bot: BotArm) => {
     try {
       setIsLoading(true);
-      const res = await createSession(score, bot);
+      const res = await createSession(score, bot, false, undefined, undefined, platform);
       setSessionId(res.session_id);
       setCurrentPhase(res.current_phase);
       setPreConviction(res.pre_conviction);

@@ -382,8 +382,43 @@ export async function submitPostConviction(sessionId: string, postConviction: nu
   return res.json();
 }
 
-export function getExportCsvUrl(): string {
-  return `${API_BASE}/export/csv`;
+export interface CsvExportParams {
+  platform?: string;
+  arm?: string;
+  status?: string;
+  cds_only?: boolean;
+  start_date?: string;  // YYYY-MM-DD
+  end_date?: string;    // YYYY-MM-DD
+  experiment_only?: boolean;
+}
+
+export function getExportCsvUrl(params?: CsvExportParams): string {
+  const url = new URL(`${API_BASE}/export/csv`, window.location.origin);
+  if (params) {
+    if (params.platform) url.searchParams.set("platform", params.platform);
+    if (params.arm) url.searchParams.set("arm", params.arm);
+    if (params.status) url.searchParams.set("status", params.status);
+    if (params.cds_only) url.searchParams.set("cds_only", "true");
+    if (params.start_date) url.searchParams.set("start_date", params.start_date);
+    if (params.end_date) url.searchParams.set("end_date", params.end_date);
+    if (params.experiment_only !== undefined) url.searchParams.set("experiment_only", String(params.experiment_only));
+  }
+  return url.toString();
+}
+
+export function getExportPdfUrl(params?: CsvExportParams & { include_insights?: boolean }): string {
+  const url = new URL(`${API_BASE}/export/pdf`, window.location.origin);
+  if (params) {
+    if (params.platform) url.searchParams.set("platform", params.platform);
+    if (params.arm) url.searchParams.set("arm", params.arm);
+    if (params.status) url.searchParams.set("status", params.status);
+    if (params.cds_only) url.searchParams.set("cds_only", "true");
+    if (params.start_date) url.searchParams.set("start_date", params.start_date);
+    if (params.end_date) url.searchParams.set("end_date", params.end_date);
+    if (params.experiment_only !== undefined) url.searchParams.set("experiment_only", String(params.experiment_only));
+    if (params.include_insights !== undefined) url.searchParams.set("include_insights", String(params.include_insights));
+  }
+  return url.toString();
 }
 
 /**
@@ -520,6 +555,8 @@ export interface AdminSession {
   followup_count: number;
   participant_name?: string;
   participant_email?: string;
+  platform?: string;
+  platform_participant_id?: string;
 }
 
 export interface AdminAnalyticsResponse {
@@ -531,6 +568,7 @@ export interface AdminAnalyticsResponse {
   arms: Record<string, ArmStats>;
   sally_lift: Record<string, number>;
   channels: Record<string, number>;
+  platforms: Record<string, { total: number; has_cds: number; mean_cds: number | null }>;
   followups: {
     sessions_with_followups: number;
     avg_followups_per_session: number;
