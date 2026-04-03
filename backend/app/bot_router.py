@@ -1,11 +1,12 @@
 """
-Bot Router — Routes messages to Sally, Hank, or Ivy based on session arm assignment.
+Bot Router — Routes messages to the correct bot based on session arm assignment.
 
-Sally uses the existing three-layer engine (agent.py).
+Sally-engine arms (sally_nepq + 5 hybrids) use the three-layer engine (agent.py).
 Hank and Ivy use simple single-prompt Claude calls (bots/).
 """
 import logging
 from app.schemas import NepqPhase, BotArm
+from app.persona_config import SALLY_ENGINE_ARMS
 from app.agent import SallyEngine
 from app.bots.hank import HankBot
 from app.bots.ivy import IvyBot
@@ -21,12 +22,20 @@ BOT_DISPLAY_NAMES = {
     BotArm.SALLY_NEPQ: "Sally",
     BotArm.HANK_HYPES: "Hank",
     BotArm.IVY_INFORMS: "Ivy",
+    BotArm.SALLY_HANK_CLOSE: "Sally",
+    BotArm.SALLY_IVY_BRIDGE: "Sally",
+    BotArm.SALLY_EMPATHY_PLUS: "Sally",
+    BotArm.SALLY_DIRECT: "Sally",
+    BotArm.HANK_STRUCTURED: "Hank",
 }
 
 
 def get_greeting(arm: BotArm) -> str:
     """Get the opening greeting for the assigned bot."""
-    if arm == BotArm.SALLY_NEPQ:
+    if arm.value == "hank_structured":
+        # Hank Structured uses Hank's greeting text but runs through Sally's engine
+        return _hank.get_greeting()
+    elif arm.value in SALLY_ENGINE_ARMS:
         return SallyEngine.get_greeting()
     elif arm == BotArm.HANK_HYPES:
         return _hank.get_greeting()
@@ -61,12 +70,12 @@ def route_message(
     Route a message to the correct bot.
 
     Returns a dict with the same shape regardless of bot, so main.py
-    can handle all three uniformly.
+    can handle all bots uniformly.
     """
     logger.info(f"[Router] Routing to {arm.value} (memory={'yes' if memory_context else 'no'})")
 
-    if arm == BotArm.SALLY_NEPQ:
-        # Sally uses the full three-layer engine — pass everything through
+    if arm.value in SALLY_ENGINE_ARMS:
+        # Sally-engine arms use the full three-layer engine
         return SallyEngine.process_turn(
             current_phase=current_phase,
             user_message=user_message,
@@ -81,6 +90,7 @@ def route_message(
             objection_diffusion_step=objection_diffusion_step,
             ownership_substep=ownership_substep,
             memory_context=memory_context,
+            arm_key=arm.value,
         )
 
     elif arm == BotArm.HANK_HYPES:

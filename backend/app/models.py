@@ -182,6 +182,7 @@ class ThoughtLog(BaseModel):
     response_text: str
 
     profile_snapshot: dict
+    active_persona: str = "sally_default"
 
 
 class ConversationQualityScore(BaseModel):

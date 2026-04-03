@@ -117,7 +117,7 @@ def extract_memory_from_session(
     _ensure_gemini()
 
     # Build transcript text with bot-specific role label
-    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy"}
+    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy", "sally_hank_close": "Sally", "sally_ivy_bridge": "Sally", "sally_empathy_plus": "Sally", "sally_direct": "Sally", "hank_structured": "Hank"}
     bot_display = bot_names.get(bot_arm, "Agent")
 
     transcript_text = ""
@@ -607,7 +607,7 @@ def load_recent_conversation_context(db, visitor_id: str, user_id: str = None) -
     lines.append(f"LAST CONVERSATION (ended: {outcome}, reached: {phase}):")
 
     # Use bot-specific role label based on which bot had the session
-    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy"}
+    bot_names = {"sally_nepq": "Sally", "hank_hypes": "Hank", "ivy_informs": "Ivy", "sally_hank_close": "Sally", "sally_ivy_bridge": "Sally", "sally_empathy_plus": "Sally", "sally_direct": "Sally", "hank_structured": "Hank"}
     bot_display = bot_names.get(recent_session.assigned_arm, "Agent") if recent_session.assigned_arm else "Sally"
 
     for msg in recent_messages:

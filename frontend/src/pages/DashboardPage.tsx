@@ -14,6 +14,11 @@ const ARM_DISPLAY: Record<string, string> = {
   sally_nepq: "Sally",
   hank_hypes: "Hank",
   ivy_informs: "Ivy",
+  sally_hank_close: "Sally>Hank Close",
+  sally_ivy_bridge: "Sally>Ivy Bridge",
+  sally_empathy_plus: "Sally Empathy+",
+  sally_direct: "Sally Direct",
+  hank_structured: "Hank Structured",
 };
 
 const tooltipStyle = {

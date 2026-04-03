@@ -123,7 +123,12 @@ export async function identifyByNamePhone(
 
 // --- Session & Message Types ---
 
-export type BotArm = "sally_nepq" | "hank_hypes" | "ivy_informs";
+export type BotArm = "sally_nepq" | "hank_hypes" | "ivy_informs" | "sally_hank_close" | "sally_ivy_bridge" | "sally_empathy_plus" | "sally_direct" | "hank_structured";
+
+export const SALLY_ENGINE_ARMS = new Set<string>([
+  "sally_nepq", "sally_hank_close", "sally_ivy_bridge",
+  "sally_empathy_plus", "sally_direct", "hank_structured",
+]);
 
 export interface MessageResponse {
   id: string;

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session as DBSessionType
 from app.database import get_db, DBSession, DBMessage, _get_session_local
 from app.schemas import NepqPhase, BotArm
 from app.bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
+from app.persona_config import SALLY_ENGINE_ARMS
 from app.memory import (
     extract_memory_from_session, store_memory,
     load_visitor_memory, format_memory_for_prompt,
@@ -235,7 +236,7 @@ async def sms_webhook(
         # Create new session
         new_session_id = str(uuid.uuid4())[:8].upper()
         now = time.time()
-        initial_phase = NepqPhase.CONNECTION.value if target_arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+        initial_phase = NepqPhase.CONNECTION.value if target_arm.value in SALLY_ENGINE_ARMS else "CONVERSATION"
 
         new_session = DBSession(
             id=new_session_id,
@@ -360,8 +361,8 @@ async def sms_webhook(
             )
 
         # Store pre-conviction and randomly assign arm
-        arm = random.choice([BotArm.SALLY_NEPQ, BotArm.HANK_HYPES, BotArm.IVY_INFORMS])
-        initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+        arm = random.choice(list(BotArm))
+        initial_phase = NepqPhase.CONNECTION.value if arm.value in SALLY_ENGINE_ARMS else "CONVERSATION"
 
         session.pre_conviction = score
         session.assigned_arm = arm.value
@@ -625,7 +626,7 @@ def _process_and_reply_async(
             return
 
         arm = BotArm(assigned_arm) if assigned_arm else BotArm.SALLY_NEPQ
-        is_sally = arm == BotArm.SALLY_NEPQ
+        is_sally = arm.value in SALLY_ENGINE_ARMS
         current_phase = NepqPhase(current_phase_str) if current_phase_str in [p.value for p in NepqPhase] else None
 
         # Detect return-after-gap for resumption context

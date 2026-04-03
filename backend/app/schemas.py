@@ -26,6 +26,11 @@ class BotArm(str, Enum):
     SALLY_NEPQ = "sally_nepq"
     HANK_HYPES = "hank_hypes"
     IVY_INFORMS = "ivy_informs"
+    SALLY_HANK_CLOSE = "sally_hank_close"
+    SALLY_IVY_BRIDGE = "sally_ivy_bridge"
+    SALLY_EMPATHY_PLUS = "sally_empathy_plus"
+    SALLY_DIRECT = "sally_direct"
+    HANK_STRUCTURED = "hank_structured"
 
 
 # API Request Models

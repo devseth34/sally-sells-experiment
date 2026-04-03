@@ -1115,6 +1115,7 @@ def generate_response(
     emotional_context: dict | None = None,
     probe_mode: bool = False,
     memory_context: str = "",
+    persona_override: str | None = None,
 ) -> str:
     """
     Generate Sally's response using Claude API.
@@ -1149,10 +1150,11 @@ def generate_response(
     length_config = get_response_length(NepqPhase(decision.target_phase))
     max_tokens = 300 if is_closing else length_config.get("max_tokens", 200)
 
+    active_persona = persona_override if persona_override is not None else SALLY_PERSONA
     response = _get_client().messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=max_tokens,
-        system=[{"type": "text", "text": SALLY_PERSONA, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": active_persona, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )
 

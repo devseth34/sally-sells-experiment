@@ -163,7 +163,12 @@ def generate_followup_message(
     """Generate a persona-appropriate follow-up message using Claude."""
     config = FOLLOWUP_CONFIG.get(arm)
     if not config:
-        return ""
+        # Hybrid arms that run through Sally's engine use Sally's follow-up config
+        from app.persona_config import SALLY_ENGINE_ARMS
+        if arm in SALLY_ENGINE_ARMS:
+            config = FOLLOWUP_CONFIG.get("sally_nepq")
+        if not config:
+            return ""
 
     prompt_template = FOLLOWUP_PROMPTS[config["persona"]]
     prompt = prompt_template.format(
@@ -297,6 +302,10 @@ def _process_session_followup(db, session: DBSession, now: float):
     """Check if a single session needs a follow-up and send it."""
     arm = session.assigned_arm or "sally_nepq"
     config = FOLLOWUP_CONFIG.get(arm)
+    if not config:
+        from app.persona_config import SALLY_ENGINE_ARMS
+        if arm in SALLY_ENGINE_ARMS:
+            config = FOLLOWUP_CONFIG.get("sally_nepq")
     if not config:
         return
 

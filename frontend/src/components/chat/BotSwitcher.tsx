@@ -11,6 +11,11 @@ const BOTS: { id: BotArm; name: string }[] = [
   { id: "sally_nepq", name: "Sally" },
   { id: "hank_hypes", name: "Hank" },
   { id: "ivy_informs", name: "Ivy" },
+  { id: "sally_hank_close", name: "Sally>Hank Close" },
+  { id: "sally_ivy_bridge", name: "Sally>Ivy Bridge" },
+  { id: "sally_empathy_plus", name: "Sally Empathy+" },
+  { id: "sally_direct", name: "Sally Direct" },
+  { id: "hank_structured", name: "Hank Structured" },
 ];
 
 export function BotSwitcher({ currentArm, onSwitch, disabled }: BotSwitcherProps) {

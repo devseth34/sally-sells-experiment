@@ -12,12 +12,22 @@ const ARM_LABELS: Record<string, string> = {
   sally_nepq: "Sally",
   hank_hypes: "Hank",
   ivy_informs: "Ivy",
+  sally_hank_close: "Sally>Hank Close",
+  sally_ivy_bridge: "Sally>Ivy Bridge",
+  sally_empathy_plus: "Sally Empathy+",
+  sally_direct: "Sally Direct",
+  hank_structured: "Hank Structured",
 };
 
 const ARM_COLORS: Record<string, string> = {
   sally_nepq: "bg-blue-500/20 text-blue-400",
   hank_hypes: "bg-rose-500/20 text-rose-400",
   ivy_informs: "bg-zinc-500/20 text-zinc-400",
+  sally_hank_close: "bg-purple-500/20 text-purple-400",
+  sally_ivy_bridge: "bg-cyan-500/20 text-cyan-400",
+  sally_empathy_plus: "bg-pink-500/20 text-pink-400",
+  sally_direct: "bg-amber-500/20 text-amber-400",
+  hank_structured: "bg-orange-500/20 text-orange-400",
 };
 
 const STATUS_COLORS: Record<string, "success" | "warning" | "danger"> = {
@@ -181,6 +191,11 @@ export function HistoryPage() {
               <option value="sally_nepq">Sally</option>
               <option value="hank_hypes">Hank</option>
               <option value="ivy_informs">Ivy</option>
+              <option value="sally_hank_close">Sally&gt;Hank Close</option>
+              <option value="sally_ivy_bridge">Sally&gt;Ivy Bridge</option>
+              <option value="sally_empathy_plus">Sally Empathy+</option>
+              <option value="sally_direct">Sally Direct</option>
+              <option value="hank_structured">Hank Structured</option>
             </select>
             <select className={selectClass} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="">All Statuses</option>

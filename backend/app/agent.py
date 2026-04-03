@@ -27,6 +27,7 @@ from app.models import (
 from app.layers.comprehension import run_comprehension
 from app.layers.decision import make_decision, detect_situation
 from app.layers.response import generate_response
+from app.persona_config import get_persona_for_arm_phase
 from app.phase_definitions import get_exit_criteria_checklist
 
 logger = logging.getLogger("sally.engine")
@@ -127,6 +128,7 @@ class SallyEngine:
         objection_diffusion_step: int = 0,
         ownership_substep: int = 0,
         memory_context: str = "",
+        arm_key: str | None = None,
     ) -> dict:
         """
         Process a single conversation turn through all three layers.
@@ -437,7 +439,8 @@ class SallyEngine:
 
         # Layer 3: Response (with circuit breaker + emotional intelligence)
         is_probe = decision.action == "PROBE"
-        logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase} (probe={is_probe})")
+        persona_override = get_persona_for_arm_phase(arm_key, decision.target_phase) if arm_key else None
+        logger.info(f"[Turn {turn_number}] Layer 3: Generating response for {decision.target_phase} (probe={is_probe}, persona={'override' if persona_override else 'default'})")
         l3_start = time.monotonic()
         response_text = generate_response(
             decision=decision,
@@ -447,6 +450,7 @@ class SallyEngine:
             emotional_context=emotional_context,
             probe_mode=is_probe,
             memory_context=memory_context,
+            persona_override=persona_override,
         )
         l3_ms = (time.monotonic() - l3_start) * 1000
         total_ms = (time.monotonic() - turn_start) * 1000
@@ -462,6 +466,7 @@ class SallyEngine:
             response_phase=decision.target_phase,
             response_text=response_text,
             profile_snapshot=profile.model_dump(),
+            active_persona=arm_key if arm_key and persona_override else "sally_default",
         )
 
         # Determine state changes

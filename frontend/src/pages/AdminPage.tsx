@@ -19,12 +19,22 @@ const ARM_COLORS: Record<string, string> = {
   sally_nepq: "#3b82f6",
   hank_hypes: "#ef4444",
   ivy_informs: "#71717a",
+  sally_hank_close: "#8b5cf6",
+  sally_ivy_bridge: "#06b6d4",
+  sally_empathy_plus: "#ec4899",
+  sally_direct: "#f59e0b",
+  hank_structured: "#f97316",
 };
 
 const ARM_LABELS: Record<string, string> = {
   sally_nepq: "Sally",
   hank_hypes: "Hank",
   ivy_informs: "Ivy",
+  sally_hank_close: "Sally>Hank Close",
+  sally_ivy_bridge: "Sally>Ivy Bridge",
+  sally_empathy_plus: "Sally Empathy+",
+  sally_direct: "Sally Direct",
+  hank_structured: "Hank Structured",
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -195,6 +205,11 @@ export function AdminPage() {
             <option value="sally_nepq">Sally</option>
             <option value="hank_hypes">Hank</option>
             <option value="ivy_informs">Ivy</option>
+            <option value="sally_hank_close">Sally&gt;Hank Close</option>
+            <option value="sally_ivy_bridge">Sally&gt;Ivy Bridge</option>
+            <option value="sally_empathy_plus">Sally Empathy+</option>
+            <option value="sally_direct">Sally Direct</option>
+            <option value="hank_structured">Hank Structured</option>
           </select>
           <input
             type="date"

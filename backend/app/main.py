@@ -56,6 +56,7 @@ from .auth import (
 )
 from .agent import SallyEngine
 from .bot_router import route_message, get_greeting as bot_get_greeting, BOT_DISPLAY_NAMES
+from .persona_config import SALLY_ENGINE_ARMS
 from .sheets_logger import fire_sheets_log
 from .quality_scorer import score_conversation
 from .memory import extract_memory_from_session, store_memory, load_visitor_memory, format_memory_for_prompt, load_recent_conversation_context
@@ -66,6 +67,10 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sally.api")
 
+# Allocation reset: sessions before this timestamp are excluded from balanced allocation counts.
+# Set via POST /api/admin/reset-allocation. Persists only for the lifetime of this process.
+_allocation_reset_ts: float = 0.0
+
 
 def _arm_to_display_name(arm_str: str | None) -> str:
     """Convert arm string to display name for transcripts."""
@@ -73,6 +78,11 @@ def _arm_to_display_name(arm_str: str | None) -> str:
         "sally_nepq": "Sally",
         "hank_hypes": "Hank",
         "ivy_informs": "Ivy",
+        "sally_hank_close": "Sally",
+        "sally_ivy_bridge": "Sally",
+        "sally_empathy_plus": "Sally",
+        "sally_direct": "Sally",
+        "hank_structured": "Hank",
     }
     return _MAP.get(arm_str or "", "Bot")
 
@@ -637,8 +647,8 @@ def create_session(
         arm_counts = {}
         for a in BotArm:
             # Only count sessions from the current batch (last 7 days)
-            # so old skewed data doesn't affect new allocation
-            batch_cutoff = now - (7 * 86400)  # 7 days ago
+            # and after any manual allocation reset
+            batch_cutoff = max(now - (7 * 86400), _allocation_reset_ts)
             count = db.query(DBSession).filter(
                 DBSession.assigned_arm == a.value,
                 DBSession.experiment_mode == "true",
@@ -657,7 +667,7 @@ def create_session(
         )
 
     visitor_id = request.visitor_id
-    initial_phase = NepqPhase.CONNECTION.value if arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+    initial_phase = NepqPhase.CONNECTION.value if arm.value in SALLY_ENGINE_ARMS else "CONVERSATION"
 
     # Determine user_id: authenticated user takes priority
     user_id = current_user.id if current_user else None
@@ -941,7 +951,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         db.commit()
         raise HTTPException(status_code=400, detail="Session timed out due to inactivity.")
     arm = BotArm(db_session.assigned_arm) if db_session.assigned_arm else BotArm.SALLY_NEPQ
-    is_sally = arm == BotArm.SALLY_NEPQ
+    is_sally = arm.value in SALLY_ENGINE_ARMS
 
     # For Sally sessions, parse current phase as NepqPhase; for control bots, keep as string
     current_phase_str = db_session.current_phase
@@ -1536,6 +1546,11 @@ def get_trends(db: DBSessionType = Depends(get_db)):
             func.count(func.nullif(DBSession.assigned_arm != "sally_nepq", True)).label("sally"),
             func.count(func.nullif(DBSession.assigned_arm != "hank_hypes", True)).label("hank"),
             func.count(func.nullif(DBSession.assigned_arm != "ivy_informs", True)).label("ivy"),
+            func.count(func.nullif(DBSession.assigned_arm != "sally_hank_close", True)).label("sally_hank_close"),
+            func.count(func.nullif(DBSession.assigned_arm != "sally_ivy_bridge", True)).label("sally_ivy_bridge"),
+            func.count(func.nullif(DBSession.assigned_arm != "sally_empathy_plus", True)).label("sally_empathy_plus"),
+            func.count(func.nullif(DBSession.assigned_arm != "sally_direct", True)).label("sally_direct"),
+            func.count(func.nullif(DBSession.assigned_arm != "hank_structured", True)).label("hank_structured"),
             func.count(func.nullif(DBSession.channel != "web", True)).label("web"),
             func.count(func.nullif(DBSession.channel != "sms", True)).label("sms"),
         )
@@ -1552,6 +1567,11 @@ def get_trends(db: DBSessionType = Depends(get_db)):
             "sally": row.sally,
             "hank": row.hank,
             "ivy": row.ivy,
+            "sally_hank_close": row.sally_hank_close,
+            "sally_ivy_bridge": row.sally_ivy_bridge,
+            "sally_empathy_plus": row.sally_empathy_plus,
+            "sally_direct": row.sally_direct,
+            "hank_structured": row.hank_structured,
             "web": row.web,
             "sms": row.sms,
         }
@@ -1574,6 +1594,21 @@ def get_trends(db: DBSessionType = Depends(get_db)):
             func.avg(sql_case(
                 (DBSession.assigned_arm == "ivy_informs", DBSession.cds_score),
             )).label("ivy_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "sally_hank_close", DBSession.cds_score),
+            )).label("sally_hank_close_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "sally_ivy_bridge", DBSession.cds_score),
+            )).label("sally_ivy_bridge_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "sally_empathy_plus", DBSession.cds_score),
+            )).label("sally_empathy_plus_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "sally_direct", DBSession.cds_score),
+            )).label("sally_direct_cds"),
+            func.avg(sql_case(
+                (DBSession.assigned_arm == "hank_structured", DBSession.cds_score),
+            )).label("hank_structured_cds"),
             func.count(DBSession.id).label("count"),
         )
         .filter(
@@ -1592,6 +1627,11 @@ def get_trends(db: DBSessionType = Depends(get_db)):
             "sally_cds": round(float(row.sally_cds), 2) if row.sally_cds is not None else None,
             "hank_cds": round(float(row.hank_cds), 2) if row.hank_cds is not None else None,
             "ivy_cds": round(float(row.ivy_cds), 2) if row.ivy_cds is not None else None,
+            "sally_hank_close_cds": round(float(row.sally_hank_close_cds), 2) if row.sally_hank_close_cds is not None else None,
+            "sally_ivy_bridge_cds": round(float(row.sally_ivy_bridge_cds), 2) if row.sally_ivy_bridge_cds is not None else None,
+            "sally_empathy_plus_cds": round(float(row.sally_empathy_plus_cds), 2) if row.sally_empathy_plus_cds is not None else None,
+            "sally_direct_cds": round(float(row.sally_direct_cds), 2) if row.sally_direct_cds is not None else None,
+            "hank_structured_cds": round(float(row.hank_structured_cds), 2) if row.hank_structured_cds is not None else None,
             "count": row.count,
         }
         for row in cds_rows
@@ -1754,6 +1794,19 @@ def cleanup_stale_sessions(db: DBSessionType = Depends(get_db)):
 
     db.commit()
     return {"cleaned": cleaned, "total_active_checked": len(active_sessions)}
+
+
+@app.post("/api/admin/reset-allocation")
+def reset_allocation():
+    """Reset balanced allocation counts so all 8 arms start from zero.
+
+    Old sessions are NOT deleted — they remain for analytics/export.
+    The allocator simply ignores sessions created before this reset.
+    """
+    global _allocation_reset_ts
+    _allocation_reset_ts = time.time()
+    logger.info(f"Allocation reset at ts={_allocation_reset_ts}")
+    return {"status": "ok", "allocation_reset_ts": _allocation_reset_ts}
 
 
 # --- Admin Analytics ---
@@ -2588,7 +2641,7 @@ def switch_bot(
     # Create new session
     new_session_id = str(uuid.uuid4())[:8].upper()
     now = time.time()
-    initial_phase = NepqPhase.CONNECTION.value if new_arm == BotArm.SALLY_NEPQ else "CONVERSATION"
+    initial_phase = NepqPhase.CONNECTION.value if new_arm.value in SALLY_ENGINE_ARMS else "CONVERSATION"
 
     visitor_id = db_session.visitor_id
     user_id = current_user.id if current_user else getattr(db_session, 'user_id', None)

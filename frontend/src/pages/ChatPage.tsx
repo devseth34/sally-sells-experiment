@@ -8,6 +8,7 @@ import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx"
 import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
 import { formatTime } from "../lib/utils";
 import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
+import { SALLY_ENGINE_ARMS } from "../lib/api";
 
 export function ChatPage() {
   // Capture platform from URL (e.g., ?platform=meta)
@@ -208,7 +209,7 @@ export function ChatPage() {
       {sessionId && (
         <>
           <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-950/80 overflow-x-auto">
-            {assignedArm === "sally_nepq" ? (
+            {SALLY_ENGINE_ARMS.has(assignedArm) ? (
               <PhaseIndicator currentPhase={currentPhase} />
             ) : (
               <span className="text-xs text-zinc-400 font-medium">

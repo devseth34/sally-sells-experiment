@@ -3,10 +3,10 @@ import { MessageBubble } from "../components/chat/MessageBubble.tsx";
 import { ChatInput } from "../components/chat/ChatInput.tsx";
 import { ExperimentSurveyModal } from "../components/chat/ExperimentSurveyModal.tsx";
 import { PostConvictionModal } from "../components/chat/PostConvictionModal.tsx";
-import { createSession, sendMessage, endSession, endSessionBeacon, switchBot, clearVisitorMemory } from "../lib/api";
-import { BotSwitcher } from "../components/chat/BotSwitcher.tsx";
+import { createSession, sendMessage, endSession, endSessionBeacon } from "../lib/api";
 import { formatTime } from "../lib/utils";
-import type { MessageResponse, PostConvictionResponse, BotArm } from "../lib/api";
+import type { MessageResponse, PostConvictionResponse } from "../lib/api";
+import { SALLY_ENGINE_ARMS } from "../lib/api";
 
 export function ExperimentPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -147,62 +147,6 @@ export function ExperimentPage() {
     setShowSurvey(true);
   };
 
-  const handleSwitchBot = async (newBot: BotArm) => {
-    if (!sessionId || isLoading) return;
-
-    try {
-      setIsLoading(true);
-      const res = await switchBot(sessionId, newBot);
-
-      setSessionId(res.new_session_id);
-      setCurrentPhase(res.current_phase);
-      setBotDisplayName(res.bot_display_name);
-      setAssignedArm(res.new_arm);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `switch-${Date.now()}`,
-          role: "assistant" as const,
-          content: `--- Switched to ${res.bot_display_name} ---`,
-          timestamp: Date.now() / 1000,
-          phase: res.current_phase,
-        },
-        res.greeting,
-      ]);
-    } catch (err) {
-      console.error("Failed to switch bot:", err);
-      alert("Failed to switch bot. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleResetMemory = async () => {
-    if (!confirm("This will clear all stored memory about you. Continue?")) return;
-    try {
-      await clearVisitorMemory();
-      if (sessionId && !sessionEnded) {
-        await endSession(sessionId);
-      }
-      setSessionId(null);
-      setMessages([]);
-      setCurrentPhase("CONVERSATION");
-      setSessionEnded(false);
-      setPreConviction(null);
-      setShowPostModal(false);
-      setCdsResult(null);
-      setBotDisplayName("AI Assistant");
-      setAssignedArm("sally_nepq");
-      setSeconds(0);
-      if (timerRef.current) clearInterval(timerRef.current);
-      setShowSurvey(true);
-      alert("Memory cleared. Starting fresh.");
-    } catch (err) {
-      console.error("Failed to reset memory:", err);
-    }
-  };
-
   return (
     <div className="h-screen flex flex-col bg-zinc-950 text-white">
       {/* Minimal header — no navigation */}
@@ -285,19 +229,8 @@ export function ExperimentPage() {
       {/* Active chat */}
       {sessionId && (
         <>
-          {/* Minimal status bar — timer + bot switcher + reset */}
+          {/* Minimal status bar — timer only (no bot switcher or reset for experiment participants) */}
           <div className="flex items-center justify-end gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-950/80">
-            <BotSwitcher
-              currentArm={assignedArm}
-              onSwitch={handleSwitchBot}
-              disabled={isLoading || sessionEnded}
-            />
-            <button
-              onClick={handleResetMemory}
-              className="text-[10px] text-red-500/60 hover:text-red-400 transition-colors"
-            >
-              Reset Memory
-            </button>
             <span
               className={`text-xs font-mono ${
                 seconds > 1700 ? "text-red-400" : seconds > 1500 ? "text-amber-400" : "text-zinc-500"
@@ -331,10 +264,10 @@ export function ExperimentPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Finish & Rate button — Sally: after COMMITMENT phase; Hank/Ivy: after 5 user turns (~11 messages) */}
+          {/* Finish & Rate button — Sally-engine arms: after COMMITMENT phase; control bots: after 5 user turns (~11 messages) */}
           {!sessionEnded && (
-            (assignedArm === "sally_nepq" && currentPhase === "COMMITMENT") ||
-            (assignedArm !== "sally_nepq" && messages.length >= 11)
+            (SALLY_ENGINE_ARMS.has(assignedArm) && currentPhase === "COMMITMENT") ||
+            (!SALLY_ENGINE_ARMS.has(assignedArm) && messages.length >= 11)
           ) && (
             <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-950/80 flex justify-center">
               <button

@@ -21,6 +21,31 @@ const BOT_OPTIONS: { id: BotArm; name: string; description: string }[] = [
     name: "Ivy",
     description: "Informational — provides neutral facts and details",
   },
+  {
+    id: "sally_hank_close",
+    name: "Sally > Hank Close",
+    description: "Sally's empathy early, direct closing energy late",
+  },
+  {
+    id: "sally_ivy_bridge",
+    name: "Sally > Ivy Bridge",
+    description: "Sally with neutral info-gathering in middle phases",
+  },
+  {
+    id: "sally_empathy_plus",
+    name: "Sally Empathy+",
+    description: "Amplified emotional mirroring and warmth throughout",
+  },
+  {
+    id: "sally_direct",
+    name: "Sally Direct",
+    description: "Concise, efficient — respects your time",
+  },
+  {
+    id: "hank_structured",
+    name: "Hank Structured",
+    description: "Hank's energy with structured NEPQ progression",
+  },
 ];
 
 export function ConvictionModal({ onStart }: ConvictionModalProps) {

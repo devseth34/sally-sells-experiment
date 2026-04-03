@@ -25,6 +25,8 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
+from app.schemas import BotArm
+
 logger = logging.getLogger("sally.report")
 
 # Colors
@@ -295,9 +297,9 @@ def generate_pdf_report(
 
     # Per-arm summary table
     arm_table_data = [["Arm", "Sessions", "CDS Scores", "Mean CDS", "Mean Pre", "Mean Post", "Completion %"]]
-    arm_display = {"sally_nepq": "Sally (NEPQ)", "hank_hypes": "Hank (Aggressive)", "ivy_informs": "Ivy (Neutral)"}
+    arm_display = {"sally_nepq": "Sally (NEPQ)", "hank_hypes": "Hank (Aggressive)", "ivy_informs": "Ivy (Neutral)", "sally_hank_close": "Sally>Hank Close", "sally_ivy_bridge": "Sally>Ivy Bridge", "sally_empathy_plus": "Sally Empathy+", "sally_direct": "Sally Direct", "hank_structured": "Hank Structured"}
 
-    for arm_key in ["sally_nepq", "hank_hypes", "ivy_informs"]:
+    for arm_key in [a.value for a in BotArm]:
         arm = stats["by_arm"].get(arm_key, {})
         if not arm:
             continue
