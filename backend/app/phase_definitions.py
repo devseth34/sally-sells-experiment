@@ -30,7 +30,7 @@ PHASE_DEFINITIONS = {
             "ai_interest_stated": "Prospect has given ANY reason they're interested in AI or exploring it (even vague like 'checking it out' counts)",
         },
         "advance_when": "all",  # all criteria must be met
-        "min_turns": 2,
+        "min_turns": 1,
         "confidence_threshold": 65,
         "sally_objectives": [
             "Learn the prospect's name, role, and company",
@@ -43,7 +43,7 @@ PHASE_DEFINITIONS = {
             "EMPATHY: If they seem excited about something, match their energy. If they seem guarded, be warm but don't push",
         ],
         "extraction_targets": ["name", "role", "company", "industry"],
-        "max_retries": 3,
+        "max_retries": 2,
         "question_patterns": [
             "What do you do, and what brought you here today?",
             "[Mirror their answer] Oh nice! What kind of [their area]?",
@@ -75,7 +75,7 @@ PHASE_DEFINITIONS = {
             "EMPATHY: If they describe something impressive, acknowledge it. If they describe something hard, validate it.",
         ],
         "extraction_targets": ["current_state", "team_size", "tools_mentioned"],
-        "max_retries": 3,
+        "max_retries": 2,
         "question_patterns": [
             "[Mirror] That sounds like a lot. Walk me through what a typical week looks like for you.",
             "[Mirror their work] How many people on your team are handling that?",
@@ -96,7 +96,7 @@ PHASE_DEFINITIONS = {
             "pain_is_current": "The pain is real and current (happening now), not hypothetical or future-tense",
         },
         "advance_when": "all",
-        "min_turns": 3,
+        "min_turns": 2,
         "confidence_threshold": 65,
         "sally_objectives": [
             "MIRROR their words. If they say 'it takes forever,' say 'Takes forever...' before your question",
@@ -108,7 +108,7 @@ PHASE_DEFINITIONS = {
             "Once they name a real, specific pain, you can move on. Don't over-dig.",
         ],
         "extraction_targets": ["pain_points", "frustrations"],
-        "max_retries": 4,
+        "max_retries": 3,
         "question_patterns": [
             "[Mirror their situation] That sounds like a lot. What's the hardest part about that?",
             "You said [their exact words]. When that happens, what does it actually cost you?",
@@ -129,7 +129,7 @@ PHASE_DEFINITIONS = {
             "gap_is_clear": "There is a clear contrast between their current pain/situation and their desired state (the 'gap' is visible)",
         },
         "advance_when": "all",
-        "min_turns": 2,
+        "min_turns": 1,
         "confidence_threshold": 65,
         "sally_objectives": [
             "Get them to describe their ideal outcome in concrete terms",
@@ -140,7 +140,7 @@ PHASE_DEFINITIONS = {
             "EMPATHY: The contrast between pain and dream should feel emotional, not clinical. You're helping them feel the distance.",
         ],
         "extraction_targets": ["desired_state", "success_metrics"],
-        "max_retries": 3,
+        "max_retries": 2,
         "question_patterns": [
             "You mentioned [their pain]. If you could wave a magic wand, what would that look like instead?",
             "If that was working perfectly, what would change for you day to day?",
@@ -161,7 +161,7 @@ PHASE_DEFINITIONS = {
             "urgency_felt": "The prospect understands that waiting has a price, or has expressed urgency/concern about inaction",
         },
         "advance_when": "all",
-        "min_turns": 2,
+        "min_turns": 1,
         "confidence_threshold": 70,
         "sally_objectives": [
             "Help them quantify (even roughly) what doing nothing costs them",
@@ -174,7 +174,7 @@ PHASE_DEFINITIONS = {
             "EMPATHY: When they acknowledge a real cost, validate it deeply. 'That's not just business, that's your life.' Then let it breathe.",
         ],
         "extraction_targets": ["cost_of_inaction", "timeline_pressure", "competitive_risk"],
-        "max_retries": 4,
+        "max_retries": 3,
         "question_patterns": [
             "If nothing changes in the next 6 months, what does that actually look like for you?",
             "You mentioned [their pain]. What's that costing you right now, even roughly?",
@@ -211,7 +211,7 @@ PHASE_DEFINITIONS = {
             "Only advance to COMMITMENT when they give a clear yes or hard no",
         ],
         "extraction_targets": ["decision_authority", "decision_timeline"],
-        "max_retries": 4,
+        "max_retries": 3,
         "question_patterns": [
             "Based on everything you've shared... 100x has an AI Academy specifically for mortgage professionals. Nik Shah works directly with teams like yours. The first step is just requesting an invitation — it's free. Would you be open to exploring that?",
             "Who else would need to be involved in a decision like this?",
@@ -241,7 +241,7 @@ PHASE_DEFINITIONS = {
             "Do NOT collect email or phone — the invitation page handles that",
         ],
         "extraction_targets": [],
-        "max_retries": 5,
+        "max_retries": 4,
         "question_patterns": [
             "Here's where you can request your invitation: [INVITATION_LINK]",
             "They'll ask about your mortgage operation and get back to you within 48 hours.",

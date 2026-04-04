@@ -187,6 +187,7 @@ Respond with this EXACT JSON:
 PROFILE FIELDS FOR THIS PHASE: {profile_fields_str}
 For list fields (pain_points, frustrations, tools_mentioned, success_metrics), provide ONLY NEW items.
 Evaluate criteria CUMULATIVELY across the entire conversation, not just the latest message.
+A single message CAN satisfy multiple criteria. For example, 'I'm a loan officer at ABC Mortgage, exploring AI for our follow-up process' satisfies role_shared, company_or_industry_shared, AND ai_interest_stated in one message.
 Check existing profile — if role is already filled, role_shared IS met."""
 
     early_phases = {NepqPhase.CONNECTION, NepqPhase.SITUATION, NepqPhase.PROBLEM_AWARENESS, NepqPhase.SOLUTION_AWARENESS}

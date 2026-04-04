@@ -27,7 +27,7 @@ from app.phase_definitions import (
 )
 
 # Phases that require substantive engagement (thin responses trigger PROBE)
-CRITICAL_PHASES = {NepqPhase.PROBLEM_AWARENESS, NepqPhase.CONSEQUENCE, NepqPhase.OWNERSHIP}
+CRITICAL_PHASES = {NepqPhase.CONSEQUENCE, NepqPhase.OWNERSHIP}
 
 # NEPQ Phase Order (strict sequence)
 PHASE_ORDER = [

@@ -87,6 +87,24 @@ def _arm_to_display_name(arm_str: str | None) -> str:
     return _MAP.get(arm_str or "", "Bot")
 
 
+def _engagement_gate_met(arm_value: str, turn_number: int, current_phase: str) -> bool:
+    """
+    Returns True if the session has enough engagement to show the invitation link.
+
+    Sally-engine arms: must reach OWNERSHIP/COMMITMENT phase OR have 12+ user turns.
+    Control bots: must have 8+ user turns.
+    """
+    LATE_PHASES = {"OWNERSHIP", "COMMITMENT", "TERMINATED"}
+    if arm_value in SALLY_ENGINE_ARMS:
+        if current_phase in LATE_PHASES:
+            return True
+        if turn_number >= 12:
+            return True
+        return False
+    else:
+        return turn_number >= 8
+
+
 app = FastAPI(title="Sally Sells API", version="2.0.0")
 
 app.add_middleware(
@@ -646,6 +664,8 @@ def create_session(
         # Balanced allocation: assign to the arm with fewest experiment sessions
         arm_counts = {}
         for a in BotArm:
+            if a == BotArm.HANK_STRUCTURED:
+                continue  # Removed from random pool; existing sessions still work
             # Only count sessions from the current batch (last 7 days)
             # and after any manual allocation reset
             batch_cutoff = max(now - (7 * 86400), _allocation_reset_ts)
@@ -1247,6 +1267,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
     if (
         getattr(db_session, 'experiment_mode', None) == "true"
         and db_session.turn_number >= EXPERIMENT_LINK_TURN_THRESHOLD
+        and _engagement_gate_met(arm.value, db_session.turn_number, new_phase_str)
         and not getattr(db_session, 'invitation_link_sent', None)
         and "100x.inc/academy" not in response_text
         and "[INVITATION_LINK]" not in response_text
@@ -1337,6 +1358,18 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         )
         response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
 
+    # Step 5.5: Engagement gate — strip invitation link if gate not met
+    import re as _re_gate
+    gate_met = _engagement_gate_met(arm.value, db_session.turn_number, new_phase_str)
+    if not gate_met:
+        from app.invitation import INVITATION_URL as _GATE_BASE
+        if _GATE_BASE.lower() in response_text.lower() or "100x.inc/academy" in response_text.lower():
+            response_text = _re_gate.sub(r'https?://[^\s\)\"]*100x\.inc/academy/[^\s\)\"]*', '', response_text)
+            response_text = response_text.replace("[INVITATION_LINK]", "")
+            response_text = _re_gate.sub(r':\s*$', '.', response_text.rstrip())
+            response_text = response_text.strip()
+            logger.info(f"[Session {session_id}] Engagement gate not met — stripped invitation link (turn={db_session.turn_number}, phase={new_phase_str})")
+
     # Step 6: Track invitation link sent (check for the base URL in the response)
     from app.invitation import INVITATION_URL as _INVITATION_BASE
     if _INVITATION_BASE.lower() in response_text.lower() and not getattr(db_session, 'invitation_link_sent', None):
@@ -1382,6 +1415,7 @@ def send_message(session_id: str, request: SendMessageRequest, db: DBSessionType
         previous_phase=prev_phase_display,
         phase_changed=result["phase_changed"],
         session_ended=result["session_ended"],
+        engagement_gate_met=gate_met,
     )
 
 
@@ -1433,6 +1467,14 @@ def get_session(session_id: str, db: DBSessionType = Depends(get_db)):
         ],
         "prospect_profile": prospect_profile,
         "thought_logs": thought_logs,
+        "engagement_gate_met": _engagement_gate_met(
+            getattr(db_session, 'assigned_arm', '') or '',
+            db_session.turn_number or 0,
+            db_session.current_phase or '',
+        ),
+        "legitimacy_score": getattr(db_session, 'legitimacy_score', None),
+        "legitimacy_tier": getattr(db_session, 'legitimacy_tier', None),
+        "legitimacy_details": getattr(db_session, 'legitimacy_details', None),
     }
 
 
@@ -1979,6 +2021,8 @@ def get_admin_analytics(db: DBSessionType = Depends(get_db)):
                 "followup_count": getattr(s, 'followup_count', 0),
                 "platform": getattr(s, 'platform', None),
                 "platform_participant_id": getattr(s, 'platform_participant_id', None),
+                "legitimacy_score": getattr(s, 'legitimacy_score', None),
+                "legitimacy_tier": getattr(s, 'legitimacy_tier', None),
             }
             for s in recent
         ],
@@ -2318,6 +2362,22 @@ def submit_post_conviction(session_id: str, request: PostConvictionRequest, db: 
     pre = db_session.pre_conviction or 0
     cds = request.post_conviction - pre
     db_session.cds_score = cds
+
+    # Compute Session Legitimacy Score (SLS)
+    try:
+        from app.legitimacy_scorer import compute_legitimacy_score
+        user_messages_db = db.query(DBMessage).filter(
+            DBMessage.session_id == session_id,
+            DBMessage.role == "user"
+        ).order_by(DBMessage.timestamp).all()
+        user_msgs = [m.content for m in user_messages_db]
+        sls_result = compute_legitimacy_score(user_msgs)
+        db_session.legitimacy_score = sls_result["score"]
+        db_session.legitimacy_tier = sls_result["tier"]
+        db_session.legitimacy_details = sls_result["details"]
+    except Exception as e:
+        logger.error(f"[Session {session_id}] Legitimacy scoring failed: {e}")
+
     db.commit()
 
     return PostConvictionResponse(
@@ -2325,6 +2385,8 @@ def submit_post_conviction(session_id: str, request: PostConvictionRequest, db: 
         pre_conviction=db_session.pre_conviction,
         post_conviction=request.post_conviction,
         cds_score=cds,
+        legitimacy_score=getattr(db_session, 'legitimacy_score', None),
+        legitimacy_tier=getattr(db_session, 'legitimacy_tier', None),
     )
 
 
@@ -2387,6 +2449,7 @@ def export_csv(
         "pre_conviction", "post_conviction",
         "cds_score", "message_count", "turn_number", "start_time", "end_time",
         "duration_seconds", "invitation_link_sent",
+        "legitimacy_score", "legitimacy_tier", "legitimacy_details",
         "prospect_name", "prospect_role", "prospect_company",
         "objections_encountered", "transcript",
     ])
@@ -2433,6 +2496,9 @@ def export_csv(
             s.end_time,
             duration,
             getattr(s, 'invitation_link_sent', None) or "",
+            getattr(s, 'legitimacy_score', None) or "",
+            getattr(s, 'legitimacy_tier', None) or "",
+            getattr(s, 'legitimacy_details', None) or "",
             profile.get("name", ""),
             profile.get("role", ""),
             profile.get("company", ""),

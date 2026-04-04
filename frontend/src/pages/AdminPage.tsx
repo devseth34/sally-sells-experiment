@@ -113,6 +113,7 @@ export function AdminPage() {
   const [filterStartDate, setFilterStartDate] = useState<string>("");
   const [filterEndDate, setFilterEndDate] = useState<string>("");
   const [filterCdsOnly, setFilterCdsOnly] = useState(false);
+  const [filterVerifiedOnly, setFilterVerifiedOnly] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -234,6 +235,15 @@ export function AdminPage() {
             />
             CDS only
           </label>
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={filterVerifiedOnly}
+              onChange={(e) => setFilterVerifiedOnly(e.target.checked)}
+              className="rounded bg-zinc-800 border-zinc-600"
+            />
+            Verified only
+          </label>
           <div className="flex gap-2 ml-auto">
             <a
               href={getExportCsvUrl({
@@ -300,6 +310,21 @@ export function AdminPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Legitimacy Summary */}
+        {(() => {
+          const verified = data.recent_sessions.filter((s: AdminSession) => s.legitimacy_tier === "verified").length;
+          const marginal = data.recent_sessions.filter((s: AdminSession) => s.legitimacy_tier === "marginal").length;
+          const suspect = data.recent_sessions.filter((s: AdminSession) => s.legitimacy_tier === "suspect").length;
+          return (verified + marginal + suspect > 0) ? (
+            <div className="flex items-center gap-4 px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs">
+              <span className="text-zinc-500 font-medium">Session Legitimacy:</span>
+              <span className="text-emerald-400">{verified} Verified</span>
+              <span className="text-amber-400">{marginal} Marginal</span>
+              <span className="text-red-400">{suspect} Suspect</span>
+            </div>
+          ) : null;
+        })()}
 
         {/* Section B: CDS Scorecard */}
         <div className="grid grid-cols-2 gap-4">
@@ -533,6 +558,7 @@ export function AdminPage() {
                     <th className="text-right py-2 px-2">Pre</th>
                     <th className="text-right py-2 px-2">Post</th>
                     <th className="text-right py-2 px-2">CDS</th>
+                    <th className="text-center py-2 px-2">SLS</th>
                     <th className="text-right py-2 px-2">Msgs</th>
                     <th className="text-left py-2 px-2">Phase</th>
                     <th className="text-left py-2 px-2">Duration</th>
@@ -540,7 +566,9 @@ export function AdminPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.recent_sessions.map((s: AdminSession) => (
+                  {data.recent_sessions
+                    .filter((s: AdminSession) => !filterVerifiedOnly || s.legitimacy_tier === "verified")
+                    .map((s: AdminSession) => (
                     <tr
                       key={s.id}
                       className="border-b border-zinc-800/50 hover:bg-zinc-900/80 transition-colors"
@@ -586,6 +614,21 @@ export function AdminPage() {
                       </td>
                       <td className="py-2 px-2 text-right font-medium">
                         <CdsValue cds={s.cds_score} />
+                      </td>
+                      <td className="py-2 px-2 text-center">
+                        {s.legitimacy_tier ? (
+                          <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                            s.legitimacy_tier === "verified"
+                              ? "bg-emerald-900/50 text-emerald-400"
+                              : s.legitimacy_tier === "marginal"
+                                ? "bg-amber-900/50 text-amber-400"
+                                : "bg-red-900/50 text-red-400"
+                          }`}>
+                            {s.legitimacy_score ?? ""} {s.legitimacy_tier}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-600">—</span>
+                        )}
                       </td>
                       <td className="py-2 px-2 text-right text-zinc-400">
                         {s.message_count}

@@ -361,7 +361,7 @@ async def sms_webhook(
             )
 
         # Store pre-conviction and randomly assign arm
-        arm = random.choice(list(BotArm))
+        arm = random.choice([a for a in BotArm if a != BotArm.HANK_STRUCTURED])
         initial_phase = NepqPhase.CONNECTION.value if arm.value in SALLY_ENGINE_ARMS else "CONVERSATION"
 
         session.pre_conviction = score
@@ -778,6 +778,18 @@ def _process_and_reply_async(
                 channel="sms",
             )
             response_text = response_text.replace("[INVITATION_LINK]", invitation_url)
+
+        # Engagement gate — strip invitation link if gate not met
+        from app.persona_config import SALLY_ENGINE_ARMS as _SMS_SALLY_ARMS
+        _sms_gate_met = (
+            (arm in _SMS_SALLY_ARMS and (new_phase_str in ("OWNERSHIP", "COMMITMENT", "TERMINATED") or session.turn_number >= 12))
+            or (arm not in _SMS_SALLY_ARMS and session.turn_number >= 8)
+        )
+        if not _sms_gate_met:
+            import re as _re_sms
+            response_text = _re_sms.sub(r'https?://[^\s]*100x\.inc/academy/[^\s]*', '', response_text).strip()
+            response_text = response_text.replace("[INVITATION_LINK]", "").strip()
+            logger.info(f"[SMS] Session {session_id}: engagement gate not met — stripped invitation link (turn={session.turn_number})")
 
         # Track invitation link sent
         from app.invitation import INVITATION_URL as _INVITATION_BASE

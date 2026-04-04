@@ -116,6 +116,11 @@ class DBSession(Base):
     invitation_link_sent_at = Column(Float, nullable=True)     # Timestamp when invitation link was sent
     pending_invitation_url = Column(String, nullable=True)     # Stored when link gated behind rating
 
+    # Session Legitimacy Score (SLS)
+    legitimacy_score = Column(Integer, nullable=True)          # 0-100
+    legitimacy_tier = Column(String, nullable=True)            # "verified", "marginal", "suspect"
+    legitimacy_details = Column(Text, nullable=True)           # Human-readable explanation
+
 
 class DBMessage(Base):
     __tablename__ = "messages"
@@ -209,6 +214,9 @@ def init_db():
             "pending_invitation_url": "ALTER TABLE sessions ADD COLUMN pending_invitation_url VARCHAR",
             "platform": "ALTER TABLE sessions ADD COLUMN platform VARCHAR",
             "platform_participant_id": "ALTER TABLE sessions ADD COLUMN platform_participant_id VARCHAR",
+            "legitimacy_score": "ALTER TABLE sessions ADD COLUMN legitimacy_score INTEGER",
+            "legitimacy_tier": "ALTER TABLE sessions ADD COLUMN legitimacy_tier VARCHAR",
+            "legitimacy_details": "ALTER TABLE sessions ADD COLUMN legitimacy_details TEXT",
         }
         applied = 0
         for col_name, sql in migrations.items():

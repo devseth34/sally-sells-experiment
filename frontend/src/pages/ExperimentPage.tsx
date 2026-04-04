@@ -21,6 +21,7 @@ export function ExperimentPage() {
   const [showCompletionCode, setShowCompletionCode] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
   const [pendingInvitationUrl, setPendingInvitationUrl] = useState<string | null>(null);
+  const [engagementGateMet, setEngagementGateMet] = useState(false);
 
   // Capture platform params from URL (e.g., ?platform=prolific&pid=XXXXX)
   const urlParams = new URLSearchParams(window.location.search);
@@ -113,6 +114,7 @@ export function ExperimentPage() {
         res.assistant_message,
       ]);
       setCurrentPhase(res.current_phase);
+      if (res.engagement_gate_met) setEngagementGateMet(true);
       if (res.session_ended) {
         setSessionEnded(true);
         setShowPostModal(true);
@@ -246,6 +248,7 @@ export function ExperimentPage() {
                 key={msg.id}
                 message={msg}
                 hidePhase
+                engagementGateMet={engagementGateMet}
                 onInvitationClick={(url) => {
                   setPendingInvitationUrl(url);
                   setSessionEnded(true);

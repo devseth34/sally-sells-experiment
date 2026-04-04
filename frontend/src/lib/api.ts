@@ -165,6 +165,7 @@ export interface SendMessageResponse {
   previous_phase: string;
   phase_changed: boolean;
   session_ended: boolean;
+  engagement_gate_met: boolean;
 }
 
 export interface SessionDetail {
@@ -562,6 +563,8 @@ export interface AdminSession {
   participant_email?: string;
   platform?: string;
   platform_participant_id?: string;
+  legitimacy_score?: number | null;
+  legitimacy_tier?: string | null;
 }
 
 export interface AdminAnalyticsResponse {

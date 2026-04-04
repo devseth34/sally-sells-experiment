@@ -88,6 +88,7 @@ class SendMessageResponse(BaseModel):
     previous_phase: str
     phase_changed: bool
     session_ended: bool
+    engagement_gate_met: bool = False
 
 
 class SessionDetailResponse(BaseModel):
@@ -132,6 +133,8 @@ class PostConvictionResponse(BaseModel):
     pre_conviction: Optional[int]
     post_conviction: int
     cds_score: int
+    legitimacy_score: Optional[int] = None
+    legitimacy_tier: Optional[str] = None
 
 
 class MetricsResponse(BaseModel):

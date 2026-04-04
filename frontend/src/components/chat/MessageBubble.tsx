@@ -7,6 +7,7 @@ interface MessageBubbleProps {
   onInvitationClick?: (url: string) => void;
   hasRated?: boolean;
   hidePhase?: boolean;
+  engagementGateMet?: boolean;
 }
 
 /**
@@ -20,6 +21,7 @@ function renderWithLinks(
   text: string,
   onInvitationClick?: (url: string) => void,
   hasRated?: boolean,
+  engagementGateMet?: boolean,
 ) {
   // Split on any URL, keeping the URL as a separate part
   const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -27,7 +29,11 @@ function renderWithLinks(
 
   return parts.map((part, i) => {
     // Invitation link (100x.inc/academy) → gated purple button OR direct link if already rated
+    // Defense-in-depth: hide button if engagement gate not met (backend also strips URLs)
     if (part.includes("100x.inc/academy")) {
+      if (engagementGateMet === false) {
+        return <span key={i} />;
+      }
       if (hasRated) {
         return (
           <a
@@ -101,7 +107,7 @@ function renderWithLinks(
   });
 }
 
-export function MessageBubble({ message, onInvitationClick, hasRated, hidePhase }: MessageBubbleProps) {
+export function MessageBubble({ message, onInvitationClick, hasRated, hidePhase, engagementGateMet }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const phaseColor = getPhaseColor(message.phase);
 
@@ -115,7 +121,7 @@ export function MessageBubble({ message, onInvitationClick, hasRated, hidePhase 
               : "bg-zinc-900 text-zinc-200 border border-zinc-800 rounded-bl-sm"
           }`}
         >
-          {renderWithLinks(message.content, onInvitationClick, hasRated)}
+          {renderWithLinks(message.content, onInvitationClick, hasRated, engagementGateMet)}
         </div>
         <div className="flex items-center gap-2 px-1">
           <span className="text-[10px] text-zinc-600">
