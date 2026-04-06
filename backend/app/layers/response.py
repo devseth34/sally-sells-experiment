@@ -141,14 +141,14 @@ Phases 6-7 (OWNERSHIP, COMMITMENT):
 - Confidence without pressure. CONVICTION tonality.
 
 HOW TO RESPOND — THE NEPQ WAY:
-Every response has up to two parts:
-1. MIRROR (optional, 2-5 words): Show you heard them. Use 1-2 of THEIR key words naturally. This is NOT a restatement of what they said. It's a brief acknowledgment that flows into your question.
-2. ONE QUESTION: Specific, builds on what they said, helps them go deeper or discover something.
-
-THE MIRROR IS SHORT. It is NOT:
-- A full sentence restating their situation
-- A "When [everything they said]..." setup
-- A compliment or editorial
+Response style:
+- You're texting like a sharp friend who's genuinely curious. Not interviewing. Not extracting information. Having a conversation.
+- Every response should pass this test: "Would a real person actually text this, or does it sound like a chatbot?"
+- Your responses should make the other person feel UNDERSTOOD, not interrogated. Even a simple question can do that if it's specific enough to prove you were listening.
+- ONE question per response, max. But you can lead with a brief reaction, observation, or thought before the question.
+- Short is good. But cold is bad. There's a difference between concise and robotic.
+- When they give you something emotionally heavy, slow down. Add a beat. "yeah..." or just sit with it for a moment before your question.
+- When they give you something factual and light, keep it moving. Don't artificially inflate thin messages with fake warmth.
 
 QUESTION VARIETY IS CRITICAL:
 You MUST vary your question structure. Never use the same opener twice in a row.
@@ -320,12 +320,9 @@ FORBIDDEN_PHRASES = [
 # Editorial phrases that should be caught in early phases (CONNECTION through SOLUTION_AWARENESS).
 # These are assessments Sally should NOT make in discovery phases.
 EDITORIAL_PHRASES = [
-    "that's a whole thing",
     "those are the worst",
     "that's the dream",
     "that's huge",
-    "that's no joke",
-    "that's a lot",
     "that sounds tough",
     "that sounds rough",
     "that's really something",
@@ -335,15 +332,7 @@ EDITORIAL_PHRASES = [
     "that's so frustrating",
     "that's a crowded space",
     "that's a hot combo",
-    "that's real work",
     "that's a tough one",
-    "that's no small thing",
-    "that's tricky",
-    "that's rough",
-    "that's cool",
-    "that's smart",
-    "that's wild",
-    "wow",
 ]
 
 EARLY_PHASES = {
@@ -351,8 +340,20 @@ EARLY_PHASES = {
     NepqPhase.PROBLEM_AWARENESS, NepqPhase.SOLUTION_AWARENESS,
 }
 
+# Phase-aware fallback responses for circuit breaker
+FALLBACK_RESPONSES = {
+    "CONNECTION": "What got you interested in the AI side of things?",
+    "SITUATION": "Walk me through what a typical Monday looks like for you.",
+    "PROBLEM_AWARENESS": "When was the last time that really slowed you down?",
+    "SOLUTION_AWARENESS": "If you could fix one thing about that process tomorrow, what would it be?",
+    "CONSEQUENCE": "What happens to your team if nothing changes in the next 6 months?",
+    "OWNERSHIP": "Based on everything you've shared, do you feel like having a clear AI plan could help?",
+    "COMMITMENT": "Want me to send over the details so you can take a look?",
+}
+FALLBACK_DEFAULT = "What's been the biggest challenge with that?"
 
-def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: bool = False, last_user_message: str = "") -> str:
+
+def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: bool = False, last_user_message: str = "", current_phase: str = "") -> str:
     """
     Lightweight post-generation check. If the response violates hard rules,
     return a safe fallback instead.
@@ -397,7 +398,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
     for word in FORBIDDEN_WORDS:
         if word in text_lower:
             logger.warning(f"Circuit breaker: forbidden word '{word}' detected")
-            return "How has that been playing out for you day-to-day?"
+            return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
 
     # Check 3: Forbidden phrases (match whole words/phrases, not substrings)
     for phrase in FORBIDDEN_PHRASES:
@@ -432,27 +433,33 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
                 response_text = response_text.strip(' .,!').strip()
                 text_lower = response_text.lower()
 
-    # Check 4b: Fragment echo opener — starts with prospect's words as a fragment
-    # Catches patterns like "Learn AI, nice." or "Brand positioning at a tech company."
+    # Check 4b: Fragment echo opener — starts with prospect's words as a pure parrot
+    # Only strips when the first 6+ words are EXACTLY the user's words with no integration.
+    # If Sally weaves in even one word of her own (like "so", "and", "..."), it's legitimate mirroring.
     if last_user_message:
         user_words = last_user_message.lower().split()
-        response_first_words = response_text.lower().split()[:6]
-        response_first_chunk = " ".join(response_first_words)
-        # Check if 3+ consecutive user words appear in the first 6 words of response
-        for i in range(len(user_words) - 2):
-            trigram = " ".join(user_words[i:i+3])
-            if trigram in response_first_chunk:
-                # Strip everything up to the first question mark
+        response_words = response_text.lower().split()
+        # Check if the response opens with 6+ consecutive user words verbatim (pure parrot)
+        if len(response_words) >= 6 and len(user_words) >= 6:
+            match_count = 0
+            for rw, uw in zip(response_words, user_words):
+                # Strip punctuation for comparison
+                rw_clean = rw.strip(".,!?;:'\"")
+                uw_clean = uw.strip(".,!?;:'\"")
+                if rw_clean == uw_clean:
+                    match_count += 1
+                else:
+                    break
+            if match_count >= 6:
+                # Pure parrot: strip everything up to the first question mark
                 if "?" in response_text:
                     q_pos = response_text.index("?")
-                    # Find the start of the question (last sentence before ?)
                     last_period = response_text.rfind(".", 0, q_pos)
                     last_newline = response_text.rfind("\n", 0, q_pos)
                     cut_pos = max(last_period, last_newline)
                     if cut_pos > 0:
                         response_text = response_text[cut_pos + 1:].strip()
                         logger.warning("Circuit breaker: fragment echo stripped, keeping question only")
-                break
 
     # Check 5: Pitching before Consequence (skip if user is asking about Sally's identity)
     identity_keywords = [
@@ -467,7 +474,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
         for signal in pitch_signals:
             if signal in text_lower:
                 logger.warning(f"Circuit breaker: pitch signal '{signal}' in early phase {target_phase.value}")
-                return "What's been the biggest challenge with that so far?"
+                return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
 
     # Check 5: Too long — phase-aware sentence limit (relaxed for closing messages with links)
     phase_max = get_response_length(target_phase).get("max_sentences", 4)
@@ -490,7 +497,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
     clean_words = [w for w in response_text.split() if len(w) > 1 or w.lower() in ("i", "a")]
     if len(clean_words) < 4:
         logger.warning("Circuit breaker: response too short after cleaning, using fallback")
-        return "How has that been playing out for you day-to-day?"
+        return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
 
     return response_text
 
@@ -540,6 +547,7 @@ def build_response_prompt(
     emotional_context: dict | None = None,
     probe_mode: bool = False,
     memory_context: str = "",
+    consecutive_no_new_info: int = 0,
 ) -> str:
     """Build the response generation prompt for Layer 3."""
 
@@ -572,7 +580,44 @@ EMOTIONAL INTELLIGENCE BRIEFING (from your analyst):
 - Prospect's energy level: {energy}
 """
         if exact_words:
-            empathy_instructions += f"""- KEY PHRASES TO REFERENCE (weave 1-2 of these words naturally into your question, do NOT echo the full phrase back): {json.dumps(exact_words)}
+            empathy_instructions += f"""
+HOW TO RESPOND — THIS IS THE MOST IMPORTANT SECTION:
+
+You are texting like a sharp, curious friend who happens to know a lot about business and AI. Every response should make the prospect feel like you actually absorbed what they said — not that you're checking boxes.
+
+THREE WAYS TO SHOW YOU HEARD THEM (mix these up, never do the same one twice in a row):
+
+1. REACT + ASK: A brief genuine reaction that proves you processed what they said, then your question.
+   "oh you're in mortgage? what's that world been like lately?"
+   "that's a real team. are you still hands-on with deals or mostly managing?"
+   "yeah... back-to-back meetings with 20 people, I bet. what are most of those about?"
+   The reaction should add YOUR OWN THOUGHT — not just echo their words. Show you understand the IMPLICATIONS of what they said.
+
+2. BUILD DIRECTLY: Skip the reaction, but make your question so specific that it proves you listened.
+   "are you already working with AI stuff or more trying to break into it?"
+   "like getting everyone on the same page about deals? or more ops stuff?"
+   These questions only make sense if you heard what they said. That IS the acknowledgment.
+
+3. ECHO + EXPAND (use sparingly — maybe 1 in 4 turns): Pull 2-3 of their words and add your own observation.
+   "chasing documents... yeah that's like half of mortgage ops right there."
+   "45k walking out the door, that adds up fast."
+   Only do this when they said something with real emotional weight or a concrete number.
+
+WHAT MAKES THIS FEEL HUMAN:
+- Your reactions show you UNDERSTAND their world, not just their words. "20 people" → you should know that means they're in meetings all day, not hands-on anymore. Show that.
+- Your questions should feel like they come from genuine curiosity about THIS person, not from a checklist.
+- Use casual language: "yeah?", "oh nice", "wait really?", "hm", "that's a lot"
+- Fragments are fine. "20 people — that's a real operation." is better than "Managing a team of 20 people is a significant responsibility."
+- Sometimes add "..." before a question to create a beat: "yeah... what are most of those meetings actually about?"
+- You can start with "like" or "so" casually: "like getting everyone aligned, or more..."
+
+WHAT TO NEVER DO:
+- Never just ask a bare question with zero warmth 3+ times in a row. That's an interrogation.
+- Never restate their entire message in different words. That's a parrot.
+- Never use the same opener format twice in a row (if you said "oh [word]" last time, don't do it again).
+- Never validate with canned phrases ("that's great", "that makes sense", "I hear you").
+
+THEIR EXACT WORDS (reference when useful, ignore when not): {json.dumps(exact_words)}
 """
         if emotional_cues:
             empathy_instructions += f"""- Emotional signals detected: {json.dumps(emotional_cues)}
@@ -620,7 +665,18 @@ The following exit criteria are still unmet for this phase. Your question should
 
 IMPORTANT: Do NOT ask about topics unrelated to these missing criteria. If the conversation has drifted to a tangent (geography, market trends, etc.), steer it back. Your question should feel natural but MUST move toward one of the above objectives.
 """
-                
+
+        # Conditional empathy injection for negative emotional states
+        if tone in ("frustrated", "defensive", "guarded") or energy == "low/flat":
+            empathy_instructions += f"""
+EMPATHY NOTE:
+They sound {tone} right now, energy is {energy}. Show you get it, but like a friend would — not a therapist.
+- Add a "yeah..." or "ugh" that matches their vibe before your question
+- Or fold it into your question: "with all those meetings eating your day... what actually falls through the cracks?"
+- Or just show understanding through a specific observation: "running a team that size, you're probably the last one to leave most days."
+Do NOT name their emotion ("you sound frustrated"). Do NOT use any generic sympathy phrase. Just match their energy and show you understand what their situation actually feels like.
+"""
+
     # Build phase-specific instructions
     length_config = get_response_length(target_phase)
     phase_max_sentences = length_config.get("max_sentences", 4)
@@ -979,6 +1035,24 @@ Try a COMPLETELY DIFFERENT angle:
 - If appropriate, be more direct: "I want to make sure I understand your situation..."
 """
 
+    # Disengagement recovery — switch to narrow questions when prospect stalls
+    disengagement_instructions = ""
+    richness = emotional_context.get("response_richness", "moderate") if emotional_context else "moderate"
+    if consecutive_no_new_info >= 2 and richness == "thin":
+        disengagement_instructions = """
+DISENGAGEMENT DETECTED:
+The prospect has given 2+ turns with no new information and thin responses. They are NOT responding well to open-ended questions. SWITCH to a specific, concrete, scenario-based question instead.
+
+Instead of: "How has that been playing out for you?"
+Ask something like: "When you have a complex deal, are you the one pulling all the pieces together, or does someone else run point on that?"
+
+Rules for disengagement recovery:
+- Ask about a SPECIFIC scenario, not a general feeling
+- Give them 2 concrete options to pick from (A or B format)
+- Reference something they already told you to show you were listening
+- Keep it to 1 sentence max
+"""
+
     # Add transition instructions
     transition_instructions = ""
     if decision.action == "ADVANCE":
@@ -1046,6 +1120,7 @@ If they clearly said no or aren't interested, be warm, leave the door open, and 
 {playbook_instructions}
 {objection_instructions}
 {break_glass_instructions}
+{disengagement_instructions}
 {transition_instructions}
 {end_instructions}
 {contact_instructions}
@@ -1116,6 +1191,7 @@ def generate_response(
     probe_mode: bool = False,
     memory_context: str = "",
     persona_override: str | None = None,
+    consecutive_no_new_info: int = 0,
 ) -> str:
     """
     Generate Sally's response using Claude API.
@@ -1143,6 +1219,7 @@ def generate_response(
         emotional_context=emotional_context,
         probe_mode=probe_mode,
         memory_context=memory_context,
+        consecutive_no_new_info=consecutive_no_new_info,
     )
 
     # Closing messages get slightly more room for a warm wrap-up
@@ -1166,6 +1243,6 @@ def generate_response(
 
     # Run circuit breaker (relaxed for closing messages with links)
     target_phase = NepqPhase(decision.target_phase)
-    response_text = circuit_breaker(response_text, target_phase, is_closing=is_closing, last_user_message=user_message)
+    response_text = circuit_breaker(response_text, target_phase, is_closing=is_closing, last_user_message=user_message, current_phase=target_phase.value)
 
     return response_text

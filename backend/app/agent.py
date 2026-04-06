@@ -451,6 +451,7 @@ class SallyEngine:
             probe_mode=is_probe,
             memory_context=memory_context,
             persona_override=persona_override,
+            consecutive_no_new_info=consecutive_no_new_info,
         )
         l3_ms = (time.monotonic() - l3_start) * 1000
         total_ms = (time.monotonic() - turn_start) * 1000

@@ -240,6 +240,23 @@ def make_decision(
                 retry_count=retry_count,
             )
 
+    # 5b. Engagement quality gate for CONNECTION — fires once when prospect meets
+    #     all criteria but is giving thin/low-energy responses. One warmth-building turn.
+    if (current_phase == NepqPhase.CONNECTION
+            and comprehension.exit_evaluation.all_met
+            and comprehension.response_richness == "thin"
+            and comprehension.energy_level in ("low/flat", "neutral")
+            and turns_in_current_phase <= 3
+            and retry_count == 0):
+        return DecisionOutput(
+            action="STAY",
+            target_phase=current_phase.value,
+            reason="Engagement quality gate: all criteria met but prospect is giving thin/low-energy responses. Staying for one warmth-building turn before advancing.",
+            retry_count=retry_count + 1,
+            probe_target=None,
+            objection_context=None,
+        )
+
     # === Exit criteria evaluation (CHECKLIST-BASED) — checked BEFORE probe ===
 
     # 6. Exit criteria evaluation
