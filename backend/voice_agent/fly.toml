@@ -1,0 +1,40 @@
+# Fly.io config for the Sally voice agent worker.
+#
+# Region iad (US-East) colocates with LiveKit Cloud's default region
+# per Addendum §B4. The agent is an outbound WebSocket client to
+# LiveKit, not an HTTP server, so http_service is disabled.
+
+app = "sally-voice-agent"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[processes]
+  agent = "python -m voice_agent.agent"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Autoscale on CPU — voice concurrency is CPU-bound on the ASR/TTS
+# pipe. Keep a warm instance so first call doesn't cold-start.
+[[services]]
+  protocol = ""
+  internal_port = 0
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+# TODO (Day 2+):
+#   - Confirm `shared-cpu-1x`/512mb holds up under 3 concurrent calls.
+#     Bump to performance-1x if ASR backpressure shows up.
+#   - Wire secrets via `fly secrets set` (do not inline API keys here):
+#       LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
+#       DEEPGRAM_API_KEY, CARTESIA_API_KEY, ELEVENLABS_API_KEY,
+#       ANTHROPIC_API_KEY, GEMINI_API_KEY, DATABASE_URL,
+#       MAX_CONCURRENT_CALLS, DAILY_SPEND_CAP_USD, VOICE_CHANNEL_ENABLED.
+#   - Add healthcheck once agent.py exposes one.

@@ -35,6 +35,8 @@
 
 ## 1. Project Overview
 
+> **Status: Phase 1B APPROVED (April 2026).** All Phase 1B benchmarks were met and the NEPQ brain — Layer 1 (`app/layers/comprehension.py`), Layer 2 (`app/layers/decision.py`), Layer 3 (`app/layers/response.py`), `app/phase_definitions.py`, and `app/persona_config.py` — is **frozen** as of this commit. Phase 2 (voice agent) builds on top of the frozen brain; only additive optional fields are permitted per `PHASE_2_PLAN_ADDENDUM.md` §C1. Do not modify frozen-brain semantics without written sign-off.
+
 **Sally Sells** is an AI-powered NEPQ (Neuro-Emotional Persuasion Questioning) sales agent built for 100x. Sally conducts real-time chat-based sales conversations to sell a $10,000 AI Discovery Workshop led by 100x CEO Nik Shah.
 
 The system uses a proprietary three-layer AI engine that separates analysis, decision-making, and response generation into distinct layers, producing natural, empathetic, and strategically sequenced conversations that guide prospects through the NEPQ sales framework.

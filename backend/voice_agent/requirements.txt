@@ -1,0 +1,30 @@
+# Voice agent dependencies (Fly.io image).
+#
+# Superset of backend/requirements.txt + voice-specific SDKs. Keeping
+# one requirements file per image (rather than -r ../requirements.txt)
+# because the Dockerfile build context is this directory only.
+
+# --- Existing backend deps (mirror backend/requirements.txt) ---
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic
+anthropic
+stripe
+python-dotenv
+google-auth
+google-generativeai
+requests
+eval-type-backport
+bcrypt
+python-jose[cryptography]
+python-multipart
+twilio
+reportlab
+
+# --- Voice-specific ---
+livekit-agents
+deepgram-sdk
+cartesia
+elevenlabs
