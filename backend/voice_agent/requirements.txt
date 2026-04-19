@@ -25,6 +25,8 @@ reportlab
 
 # --- Voice-specific ---
 livekit-agents
+livekit-plugins-deepgram
+livekit-plugins-cartesia
 deepgram-sdk
 cartesia
 elevenlabs

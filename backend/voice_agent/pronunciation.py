@@ -9,13 +9,23 @@ Each TTS provider has its own phoneme flavor:
     - ElevenLabs: SSML <phoneme> tags; also supports a voice-level
                   pronunciation dictionary via API
 
-Verify every entry during Day 2 by rendering sample audio per voice
-and listening.
+Day 3 status: lexicon substitution only. Day 2B smoke confirmed that
+"Shah" and every other LEXICON key render cleanly on both providers
+without phoneme tags, so the tts_provider arg is currently advisory.
+Kept in the signature so we can escalate to provider-specific phoneme
+wrapping per-entry without a caller API change if drift reappears on a
+provider refresh.
 
-Number handling: all dollar figures, percentages, and dates get
-expanded to words (e.g. "$10,000" -> "ten thousand dollars") BEFORE
-the phoneme substitution pass.
+Number / date / percentage expansion is NOT implemented here yet —
+parrot-back (Day 3) only surfaces what the user says, and the frozen
+SallyEngine outputs already read dollar figures as words (verified in
+app/persona_config.py). Revisit if Day 4+ engine output surfaces raw
+"$10,000" / "12%" / "2026-04-19" forms into TTS.
 """
+
+from __future__ import annotations
+
+import re
 
 # Initial lexicon — confirm each entry with Nik before shipping.
 # Shah pronunciation: LOCKED as /ʃɑː/ ("shah", rhymes with "spa"),
@@ -51,17 +61,32 @@ LEXICON: dict[str, str] = {
 }
 
 
+# Longest-first ordering avoids substring collisions: "Nik Shah" must
+# match before "Shah" alone, and "P and L" before "P" would if we ever
+# added single-letter keys. Built once at import time.
+_ORDERED_KEYS: list[str] = sorted(LEXICON.keys(), key=len, reverse=True)
+
+# Word-boundary substitution. We use (?<!\w)/(?!\w) rather than \b
+# because \b is undefined around non-word chars like `$` and `&` —
+# "$10,000" and "P&L" need the non-word-char prefix/suffix guard. This
+# correctly anchors "100x" (no match inside "1100x") and "AI" (no match
+# inside "paid"). IGNORECASE because Deepgram transcript casing is not
+# reliable across accents and disfluencies.
+_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?<!\w)" + re.escape(k) + r"(?!\w)", re.IGNORECASE), LEXICON[k])
+    for k in _ORDERED_KEYS
+]
+
+
 def preprocess(text: str, tts_provider: str) -> str:
     """Return `text` with pronunciation substitutions applied.
 
-    TODO (Day 2):
-        - Apply LEXICON replacements (whole-word / word-boundary match).
-        - Expand number-like tokens ($X, X%, dates) to words before
-          lexicon pass.
-        - Wrap substitutions in provider-appropriate tags:
-            - cartesia:    <phoneme alphabet="ipa" ph="...">
-            - elevenlabs:  SSML <phoneme>
-        - Add a unit test that renders each LEXICON key and asserts
-          the expected output string per provider.
+    `tts_provider` is accepted for forward-compatibility with per-
+    provider phoneme tag wrapping (see module docstring); today it is
+    unused because Day 2B smoke confirmed lexicon substitution alone is
+    sufficient on both sonic-2 and Flash v2.5.
     """
-    raise NotImplementedError("Preprocessor not yet implemented.")
+    del tts_provider  # advisory only — see module docstring
+    for pattern, replacement in _PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
