@@ -17,9 +17,15 @@ expanded to words (e.g. "$10,000" -> "ten thousand dollars") BEFORE
 the phoneme substitution pass.
 """
 
-# Initial lexicon — confirm each entry with Stan before shipping.
-# Shah pronunciation: unresolved — one of /ʃɑː/ (shah), /ʃɔː/ (shaw),
-# or /ʃeɪ/ (shay). Ask and lock before Day 2 audition.
+# Initial lexicon — confirm each entry with Nik before shipping.
+# Shah pronunciation: LOCKED as /ʃɑː/ ("shah", rhymes with "spa"),
+# per Nik 2026-04-19. "Shah" as written should hit /ʃɑː/ cleanly on
+# both Cartesia Sonic 2 and ElevenLabs Flash v2.5 (common English
+# loanword); if Day 2B audition reveals /ʃɔː/ (shaw) or /ʃeɪ/ (shay)
+# drift, escalate to provider phoneme tags:
+#     cartesia:   <phoneme alphabet="ipa" ph="ʃɑː">Shah</phoneme>
+#     elevenlabs: <phoneme alphabet="ipa" ph="ʃɑː">Shah</phoneme>
+# "Nik" -> "Nick" is a separate fix (prevents "Nike").
 LEXICON: dict[str, str] = {
     "Nik Shah":     "Nick Shah",
     "NEPQ":         "N-E-P-Q",
