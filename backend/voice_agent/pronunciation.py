@@ -42,6 +42,12 @@ LEXICON: dict[str, str] = {
     "ASR":          "A-S-R",
     "TTS":          "T-T-S",
     "SMS":          "S-M-S",
+    # P&L is read as "pandle" / "panel" on Flash v2.5 in hyphenated form.
+    # Plain-space "P and L" hits letter names cleanly on both providers
+    # (confirmed Day 2B smoke, Dev, 2026-04-19). If drift reappears in a
+    # provider refresh, escalate to explicit phonetic: "pee and ell".
+    "P&L":          "P and L",
+    "P and L":      "P and L",  # identity keeps already-correct form stable
 }
 
 

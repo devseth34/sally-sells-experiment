@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+
+# Phase 2 voice audition outputs — regenerable binary artifacts.
+# Delete and re-run `python -m backend.voice_agent.audition render` to
+# rebuild. NEVER commit these: MP3s bloat git and inflate clone size.
+backend/voice_agent/auditions/
