@@ -235,7 +235,7 @@ def run_comprehension(
 
     _ensure_gemini_configured()
 
-    models_to_try = ["gemini-2.0-flash", "gemini-2.5-flash"]
+    models_to_try = ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
     
     response = None
     for model_name in models_to_try:
@@ -247,9 +247,16 @@ def run_comprehension(
 
             response = model.generate_content(
                 user_prompt,
+                # response_mime_type forces pure JSON output (no markdown
+                # wrapping) so the 2.5-flash fallback path — where the
+                # thinking budget can otherwise eat the output budget and
+                # truncate JSON mid-string — produces valid parseable JSON.
+                # No effect on 2.0-flash output shape (already clean JSON).
+                # max_output_tokens 800 -> 2000 so thinking + JSON both fit.
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=800,
+                    max_output_tokens=2000,
                     temperature=0.1,
+                    response_mime_type="application/json",
                 ),
                 safety_settings=[
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -284,8 +291,9 @@ def run_comprehension(
             retry_response = model.generate_content(
                 user_prompt,
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=800,
+                    max_output_tokens=2000,
                     temperature=0.1,
+                    response_mime_type="application/json",
                 ),
                 safety_settings=[
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},

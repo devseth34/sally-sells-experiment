@@ -43,7 +43,9 @@ from backend.voice_agent.personalities import PERSONALITIES
 logger = logging.getLogger("sally-voice-assignment")
 
 _ARMS: Final[tuple[str, ...]] = tuple(PERSONALITIES.keys())
-_DEFAULT_RNG = random.Random()
+# SystemRandom reads os.urandom per-call, so livekit-agents' prewarmed
+# subprocesses can't inherit shared RNG state from the parent process.
+_DEFAULT_RNG = random.SystemRandom()
 
 
 def assign_personality(

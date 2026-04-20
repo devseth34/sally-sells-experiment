@@ -114,6 +114,12 @@ class SallyEngineAdapter:
 
         self._ended: bool = False
 
+        # Last-turn observability. Populated at the end of each `turn()`
+        # call so the voice runner can emit metrics without having to
+        # reach into the frozen engine's internals or re-derive state
+        # from the adapter's private fields.
+        self._last_turn_stats: dict = {}
+
     @property
     def personality(self) -> str:
         return self._personality
@@ -125,6 +131,22 @@ class SallyEngineAdapter:
     @property
     def ended(self) -> bool:
         return self._ended
+
+    @property
+    def current_phase(self) -> str:
+        """NEPQ phase the adapter is ABOUT to process the next turn in.
+
+        Before any turn has run, returns "CONNECTION". After turn N
+        completes, returns the phase that turn N advanced to (which is
+        also the phase turn N+1 starts in). Needed by the backchannel
+        trigger — CONNECTION is explicitly excluded from backchannel
+        firing (Addendum §B6 rule: performative this early).
+        """
+        return self._phase.value
+
+    @property
+    def last_turn_stats(self) -> dict:
+        return dict(self._last_turn_stats)
 
     def opener(self) -> str:
         """Return the fixed greeting Sally uses to open a chat.
@@ -198,6 +220,14 @@ class SallyEngineAdapter:
         )
         self._history.append({"role": "assistant", "content": response_text})
         self._ended = ended
+
+        self._last_turn_stats = {
+            "turn": self._turn_number,
+            "engine_ms": engine_ms,
+            "phase": self._phase.value,
+            "phase_changed": bool(result.get("phase_changed", False)),
+            "ended": ended,
+        }
 
         logger.info(
             "Turn processed",

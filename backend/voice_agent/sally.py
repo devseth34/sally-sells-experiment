@@ -39,17 +39,32 @@ from dotenv import load_dotenv
 # Load env BEFORE importing livekit or the engine bridge — the SDK
 # reads credentials at import time, and app.* needs GOOGLE_API_KEY +
 # ANTHROPIC_API_KEY to initialize its module-level clients lazily.
+# override=True because livekit-agents prewarmed subprocesses inherit
+# os.environ with API-key vars pre-set to empty strings; default
+# override=False would leave those empties alone and the ElevenLabs
+# plugin (which reads env at make_tts() time) then sends "" as the key
+# and 401s. Same reason engine_adapter.py already uses override=True.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-load_dotenv(_REPO_ROOT / ".env")
+load_dotenv(_REPO_ROOT / ".env", override=True)
 
 from livekit import rtc  # noqa: E402
 from livekit.agents import JobContext, WorkerOptions, cli  # noqa: E402
 from livekit.agents.stt import SpeechEventType  # noqa: E402
 
 from backend.voice_agent.assignment import assign_personality  # noqa: E402
+from backend.voice_agent.metrics import (  # noqa: E402
+    default_sink,
+    install_comprehension_capture,
+)
 from backend.voice_agent.sally_voice_runner import SallyVoiceRunner  # noqa: E402
 from backend.voice_agent.stt import make_stt  # noqa: E402
 from backend.voice_agent.tts import make_tts  # noqa: E402
+
+# Install the Layer-1-model capture filter once per subprocess. The
+# call is idempotent — livekit-agents reuses prewarm processes across
+# dispatches, so entrypoint() re-entry is expected; we don't want to
+# stack duplicate filters.
+install_comprehension_capture()
 
 logger = logging.getLogger("sally-voice")
 
@@ -105,11 +120,19 @@ async def entrypoint(ctx: JobContext) -> None:
     async def _on_session_end() -> None:
         shutdown_event.set()
 
+    metrics_sink = default_sink()
+    logger.info(
+        "Metrics sink",
+        extra={"path": str(metrics_sink.path), "call_id": ctx.job.id},
+    )
+
     runner = SallyVoiceRunner(
         personality=personality,
         tts=tts,
         audio_source=audio_source,
         on_session_end=_on_session_end,
+        metrics_sink=metrics_sink,
+        call_id=ctx.job.id,
     )
 
     async def _drive_stt_from_track(
@@ -145,6 +168,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     )
                     if not text.strip():
                         continue
+                    asr_ms: float | None = None
                     if utterance_end_t is not None:
                         asr_ms = (time.monotonic() - utterance_end_t) * 1000
                         logger.info(
@@ -157,7 +181,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     # Kick off turn processing — don't await, so one
                     # long engine turn doesn't block the next ASR read.
                     # The runner's turn_lock drops concurrent finals.
-                    asyncio.create_task(runner.on_user_turn(text))
+                    asyncio.create_task(runner.on_user_turn(text, asr_ms=asr_ms))
 
         await asyncio.gather(_pump_audio(), _read_transcripts())
 

@@ -1,39 +1,50 @@
 """Backchannel injector: scripted "mhm/yeah/got it" while Sally thinks.
 
 Purpose:
-    1. Mask 500-800ms of perceived latency while Layer 1 runs
-       (Addendum §A1 parallelization strategy).
-    2. Sound engaged during long user monologues without stepping on
-       the speaker.
+    Mask the ~3-5s engine latency between the user finishing a turn and
+    Sally's TTS starting. A short filler ("mhm", "gotcha") played during
+    the Layer 1+3 wait makes the conversation feel engaged rather than
+    dead. Biggest perceived-UX win on top of the 2.5-flash-lite model
+    swap (Day 5 brief).
 
-Firing a backchannel at EVERY end-of-turn is the textbook "obvious AI"
-signature — so this module gates them behind trigger rules (§B6).
+Day 5 scope — ONE trigger, mid-engine:
+    The runner schedules a backchannel task at the start of every
+    on_user_turn, which sleeps ~500ms and then — if the engine hasn't
+    yet returned — fires a filler through the same TTS + audio source
+    as Sally's real response. An asyncio.Lock serializes audio emission
+    so the filler never collides with Sally's eventual TTS output. The
+    task is cancelled if the engine returns before the sleep elapses,
+    so fast turns skip the filler entirely.
 
-Rule summary:
-    NEVER when:
-        - fast-path match (trivial utterance)
-        - user utterance duration < 1s
-        - last backchannel fired < 8s ago
-        - phase is CONNECTION (performative-sounding this early)
-    ALWAYS when:
-        - user utterance >= 6s AND phase in {PROBLEM_AWARENESS,
-          CONSEQUENCE, OWNERSHIP}
-        - interim ASR contains emotional markers
-    PROBABILISTIC (50%):
-        - user utterance 3-6s in any phase past CONNECTION
+    EOT-triggered semantic backchannels (long user utterance → fire
+    "I hear you", emotional-marker detection, etc. — Addendum §B6's
+    richer ruleset) are Day 6+ scope. The scaffold's
+    `should_fire_backchannel` function captures that design for the
+    future; today the runner uses a narrower gating set below.
 
-Per-personality density multipliers (applied to the probabilistic
-bucket; the ALWAYS bucket is non-negotiable):
-    warm:      100%  (fire every probabilistic opportunity)
-    confident:  30%
-    direct:     15%  (only the ALWAYS set)
+Gating for the mid-engine trigger:
+    NEVER fire if:
+        - phase is CONNECTION (too performative during the opener)
+        - fewer than MIN_INTERVAL_SEC since last backchannel (avoid
+          "mm-hmm every turn" robotic pattern)
+        - personality density multiplier rolls False
+    Then: pick a phrase that wasn't among the last 2 used this call.
 
-Variety: track last 2 used per session; never repeat consecutively.
+Per-personality density multipliers (applied to every eligible turn):
+    warm:       1.00   (fire every eligible turn — dense warmth)
+    confident:  0.30   (sparse — professional cadence)
+    direct:     0.00   (never — direct personality = tight, no filler)
+
+The multipliers track personalities.py's `backchannel_density` field
+(high/medium/low), but numerically so the trigger is a clean
+`random() < mult` check.
 """
 
 from __future__ import annotations
 
+import random
 import re
+from typing import Sequence
 
 BACKCHANNELS: dict[str, list[str]] = {
     "warm":      ["mhm", "yeah", "uh-huh", "okay", "got it", "right", "I hear you"],
@@ -41,24 +52,89 @@ BACKCHANNELS: dict[str, list[str]] = {
     "direct":    ["mhm", "okay", "right"],
 }
 
-# Phases where "ALWAYS" backchannel on long user turns.
 ALWAYS_PHASES: set[str] = {"PROBLEM_AWARENESS", "CONSEQUENCE", "OWNERSHIP"}
 
-# Emotional-marker regex — if interim ASR contains any of these
-# stems, jump straight to an ALWAYS fire regardless of duration.
 EMOTION_MARKER_RE = re.compile(
     r"(frustrat|stuck|tired|overwhelm|worr|stress|anxio)", re.IGNORECASE
 )
 
-# Probabilistic multiplier per personality (applied to the 3-6s bucket).
 PROBABILISTIC_MULTIPLIER: dict[str, float] = {
     "warm":      1.00,
     "confident": 0.30,
-    "direct":    0.00,  # direct skips the probabilistic bucket entirely
+    "direct":    0.00,
 }
 
-# Minimum seconds between consecutive backchannel fires per session.
 MIN_INTERVAL_SEC = 8.0
+
+
+def short_key(personality: str) -> str:
+    """Map `sally_warm` -> `warm` etc. so backchannel tables can stay
+    keyed by bare personality descriptors (matches the audition +
+    scoring modules, which predate the `sally_*` naming)."""
+    return personality.removeprefix("sally_")
+
+
+def pick_backchannel(
+    personality: str,
+    recently_used: Sequence[str],
+    *,
+    rng: random.Random | None = None,
+) -> str:
+    """Return a backchannel phrase for `personality`, avoiding the last
+    2 used this call.
+
+    If every candidate is in `recently_used` (possible for `direct` with
+    only 3 phrases), falls back to the first candidate that isn't the
+    IMMEDIATELY preceding one — better to repeat an older phrase than
+    stutter the exact same filler back to back.
+
+    `rng` is injectable for deterministic tests; defaults to module
+    `random` for production (SystemRandom is overkill here — filler
+    variety doesn't need cryptographic quality).
+    """
+    key = short_key(personality)
+    pool = list(BACKCHANNELS.get(key, []))
+    if not pool:
+        raise ValueError(f"No backchannels configured for personality {personality!r}")
+
+    picker = rng if rng is not None else random
+    avoid = set(recently_used[-2:]) if recently_used else set()
+    candidates = [p for p in pool if p not in avoid]
+
+    if candidates:
+        return picker.choice(candidates)
+
+    # Pool exhausted by recency; fall back to any phrase that isn't the
+    # single most recent one (so we don't repeat twice in a row).
+    most_recent = recently_used[-1] if recently_used else None
+    fallback_pool = [p for p in pool if p != most_recent] or pool
+    return picker.choice(fallback_pool)
+
+
+def should_fire_mid_engine(
+    *,
+    personality: str,
+    phase: str,
+    seconds_since_last: float,
+    rng: random.Random | None = None,
+) -> bool:
+    """Decide whether to fire a mid-engine backchannel on this turn.
+
+    Narrower than `should_fire_backchannel` below — Day 5 uses this one.
+    Gating order mirrors the docstring: phase → interval → density roll.
+    """
+    if phase == "CONNECTION":
+        return False
+    if seconds_since_last < MIN_INTERVAL_SEC:
+        return False
+    key = short_key(personality)
+    mult = PROBABILISTIC_MULTIPLIER.get(key, 0.0)
+    if mult <= 0.0:
+        return False
+    if mult >= 1.0:
+        return True
+    picker = rng if rng is not None else random
+    return picker.random() < mult
 
 
 def should_fire_backchannel(
@@ -69,19 +145,12 @@ def should_fire_backchannel(
     interim_transcript: str,
     seconds_since_last: float,
     is_fast_path_match: bool,
+    rng: random.Random | None = None,
 ) -> bool:
-    """Return True if a backchannel should fire at the current EOT.
+    """Full scaffold-design trigger (EOT-semantic). Day 6+ scope.
 
-    Caller is responsible for: (1) actually picking the phrase via
-    `pick_backchannel()`, (2) resetting the "seconds_since_last" clock,
-    (3) scheduling the TTS within ~100ms of EOT.
-
-    TODO (Day 2):
-        - Plumb session-level state (last_used list, last_fired_at)
-          from sally_voice_runner.py rather than the caller.
-        - Wire into streaming_validator.py's sentence-flush loop so a
-          backchannel can preempt Sally's first sentence if Layer 3
-          is slow.
+    Kept callable and tested so the richer EOT-based trigger can slot in
+    without re-deriving the rules. Not wired into the runner today.
     """
     if is_fast_path_match:
         return False
@@ -92,28 +161,15 @@ def should_fire_backchannel(
     if phase == "CONNECTION":
         return False
 
-    # ALWAYS bucket.
     if phase in ALWAYS_PHASES and user_utterance_sec >= 6.0:
         return True
     if EMOTION_MARKER_RE.search(interim_transcript or ""):
         return True
 
-    # Probabilistic bucket (3-6s).
     if 3.0 <= user_utterance_sec < 6.0:
-        import random
-        mult = PROBABILISTIC_MULTIPLIER.get(personality, 0.0)
-        return random.random() < mult
+        key = short_key(personality)
+        mult = PROBABILISTIC_MULTIPLIER.get(key, 0.0)
+        picker = rng if rng is not None else random
+        return picker.random() < mult
 
     return False
-
-
-def pick_backchannel(personality: str, recently_used: list[str]) -> str:
-    """Return a backchannel phrase, avoiding the last 2 used.
-
-    TODO (Day 2):
-        - Promote `recently_used` tracking to session state in
-          sally_voice_runner.py.
-        - If all candidates are in recently_used, fall back to the
-          least-recent one (don't lock up).
-    """
-    raise NotImplementedError("Picker not yet implemented.")

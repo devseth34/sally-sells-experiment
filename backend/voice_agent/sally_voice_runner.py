@@ -48,11 +48,27 @@ from typing import Awaitable, Callable
 from livekit import rtc
 from livekit.agents import tts as lk_tts
 
+from backend.voice_agent.backchannel import (
+    pick_backchannel,
+    should_fire_mid_engine,
+)
 from backend.voice_agent.engine_adapter import SallyEngineAdapter
+from backend.voice_agent.metrics import (
+    MetricsSink,
+    TurnMetrics,
+    consume_turn_l1_model,
+)
 from backend.voice_agent.personalities import PERSONALITIES
 from backend.voice_agent.pronunciation import preprocess
 
 logger = logging.getLogger("sally-voice-runner")
+
+# Delay after engine.turn() starts before the backchannel fires. If the
+# engine returns before this elapses (fast path / cached responses), the
+# task is cancelled and nothing plays. 500ms chosen to overlap with
+# typical engine latency (~3.5s on 2.5-flash-lite) while skipping the
+# rare sub-500ms returns.
+_BACKCHANNEL_DELAY_S = 0.5
 
 # Base post-response pause in seconds. The personality's
 # `post_response_pause_multiplier` scales this: sally_direct (0.85)
@@ -86,6 +102,8 @@ class SallyVoiceRunner:
         tts: lk_tts.TTS,
         audio_source: rtc.AudioSource,
         on_session_end: Callable[[], Awaitable[None]] | None = None,
+        metrics_sink: MetricsSink | None = None,
+        call_id: str = "",
     ) -> None:
         if personality not in PERSONALITIES:
             raise ValueError(f"Unknown personality {personality!r}")
@@ -99,7 +117,24 @@ class SallyVoiceRunner:
         self._audio_source = audio_source
         self._adapter = SallyEngineAdapter(personality)
         self._turn_lock = asyncio.Lock()
+        # Serializes any audio emission into the shared AudioSource.
+        # Backchannel fillers and Sally's real TTS response compete for
+        # this lock — the filler takes it first (scheduled at the start
+        # of on_user_turn) and releases when its synthesis is done;
+        # Sally's _speak then acquires it after engine.turn() returns.
+        # Without this, a slow engine could have the filler still
+        # playing when Sally starts, producing audible overlap.
+        self._audio_lock = asyncio.Lock()
         self._on_session_end = on_session_end
+        self._metrics_sink = metrics_sink
+        self._call_id = call_id
+        self._turn_index = 0
+        # Backchannel state — lives across the whole call, not per turn.
+        # `_recently_used_backchannels` caps at the last 2 entries so
+        # pick_backchannel can avoid immediate repeats. `_last_backchannel_at`
+        # enforces MIN_INTERVAL_SEC gating across turns.
+        self._recently_used_backchannels: list[str] = []
+        self._last_backchannel_at: float = 0.0
 
     @property
     def personality(self) -> str:
@@ -127,10 +162,14 @@ class SallyVoiceRunner:
             )
             await self._speak(greeting)
 
-    async def on_user_turn(self, transcript: str) -> None:
+    async def on_user_turn(self, transcript: str, *, asr_ms: float | None = None) -> None:
         """Drive one engine turn end-to-end. Safe to call from an STT
         final handler; if a turn is already in flight, this transcript
         is dropped with a log line (see module docstring on turn-taking).
+
+        `asr_ms` is the Deepgram-final latency measured since end-of-speech
+        in sally.py. Threaded through so the per-turn metrics row can
+        record it alongside engine_ms and tts_first_frame_ms.
         """
         if not transcript.strip():
             return
@@ -144,6 +183,17 @@ class SallyVoiceRunner:
             return
 
         async with self._turn_lock:
+            response_text = ""
+            ended = False
+            first_frame_ms: float | None = None
+            engine_ms: float | None = None
+            # Start the backchannel task concurrently with the engine
+            # call. It sleeps _BACKCHANNEL_DELAY_S before firing, so a
+            # fast engine return cancels it before any audio goes out.
+            bc_task = asyncio.create_task(
+                self._fire_backchannel_during_engine(),
+                name=f"backchannel-turn-{self._turn_index + 1}",
+            )
             try:
                 t0 = time.monotonic()
                 response_text, ended = await self._adapter.turn(transcript)
@@ -158,39 +208,194 @@ class SallyVoiceRunner:
                 )
             except Exception:
                 logger.exception("Engine turn failed — using fallback phrase")
+                await self._cancel_backchannel(bc_task)
                 await self._speak(_ENGINE_FALLBACK)
+                self._emit_metrics(
+                    user_text=transcript,
+                    sally_text=_ENGINE_FALLBACK,
+                    asr_ms=asr_ms,
+                    engine_ms=None,
+                    tts_first_frame_ms=None,
+                    ended=False,
+                    phase_stats=self._adapter.last_turn_stats,
+                )
                 return
+            finally:
+                # Whether engine succeeded or raised, the backchannel task
+                # must be cancelled/awaited so it doesn't leak into the
+                # next turn's audio window.
+                await self._cancel_backchannel(bc_task)
 
             if response_text:
-                await self._speak(response_text)
+                first_frame_ms = await self._speak(response_text)
             # Pacing: post-response pause scales with personality.
             # sally_direct is terser + faster to re-engage; sally_warm
             # lingers. Do this BEFORE checking `ended` so a farewell
             # line plus pause feels natural before teardown.
             await asyncio.sleep(self._pause_s)
 
+            self._emit_metrics(
+                user_text=transcript,
+                sally_text=response_text,
+                asr_ms=asr_ms,
+                engine_ms=engine_ms,
+                tts_first_frame_ms=first_frame_ms,
+                ended=ended,
+                phase_stats=self._adapter.last_turn_stats,
+            )
+
             if ended and self._on_session_end is not None:
                 logger.info("Session ended by engine — signaling teardown")
                 await self._on_session_end()
 
-    async def _speak(self, text: str) -> None:
+    def _emit_metrics(
+        self,
+        *,
+        user_text: str,
+        sally_text: str,
+        asr_ms: float | None,
+        engine_ms: float | None,
+        tts_first_frame_ms: float | None,
+        ended: bool,
+        phase_stats: dict,
+    ) -> None:
+        """One JSONL row per completed turn (or engine-failure fallback).
+
+        Safe to call with a None sink — callers that don't wire metrics
+        (tests, parrot.py) get a no-op path. `consume_turn_l1_model` is
+        called on every turn so captured model state doesn't leak across
+        turns even when the sink is absent.
+        """
+        l1_model = consume_turn_l1_model()
+        if self._metrics_sink is None:
+            return
+        self._turn_index += 1
+        try:
+            self._metrics_sink.emit(
+                TurnMetrics(
+                    call_id=self._call_id,
+                    turn_index=self._turn_index,
+                    personality=self._personality,
+                    arm=self._adapter.arm_key,
+                    phase=str(phase_stats.get("phase", "")),
+                    phase_changed=bool(phase_stats.get("phase_changed", False)),
+                    user_text=user_text,
+                    sally_text=sally_text,
+                    asr_ms=asr_ms,
+                    engine_ms=engine_ms,
+                    l1_model=l1_model,
+                    tts_first_frame_ms=tts_first_frame_ms,
+                    ended=ended,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Metrics emit failed (non-fatal)")
+
+    async def _speak(self, text: str) -> float | None:
         """Synthesize through the personality's TTS and publish.
 
-        Swallows TTS failures. Same rationale as parrot._speak: a
-        single bad synthesis must not tear down the call.
+        Returns the TTS first-frame latency in ms (None if the TTS
+        failed before emitting a frame). Callers use the return for
+        metrics; not returning it would mean per-turn rows can't
+        include tts_first_frame_ms for audit. Swallows TTS failures —
+        same rationale as parrot._speak: a single bad synthesis must
+        not tear down the call.
+
+        Acquires `_audio_lock` for the entire synthesis so concurrent
+        backchannel emission never overlaps with Sally's real response
+        on the shared AudioSource.
         """
         processed = preprocess(text, self._tts_provider)
-        t0 = time.monotonic()
-        first_frame = True
+        first_frame_ms: float | None = None
+        async with self._audio_lock:
+            t0 = time.monotonic()
+            try:
+                async for chunk in self._tts.synthesize(processed):
+                    if first_frame_ms is None:
+                        first_frame_ms = (time.monotonic() - t0) * 1000
+                        logger.info(
+                            "TTS first-frame",
+                            extra={"first_frame_ms": round(first_frame_ms), "text": processed[:80]},
+                        )
+                    await self._audio_source.capture_frame(chunk.frame)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("TTS failed for %r: %s", processed[:60], exc)
+        return first_frame_ms
+
+    async def _fire_backchannel_during_engine(self) -> None:
+        """Sleep _BACKCHANNEL_DELAY_S then, if still gated-in, emit one
+        filler phrase through the same TTS/AudioSource as Sally.
+
+        This coroutine is scheduled as a task at the start of
+        on_user_turn and cancelled after engine.turn() returns. Two
+        cancellation paths:
+            1. Engine returned before the sleep elapsed — task cancelled
+               mid-sleep, nothing synthesized, no audio played.
+            2. Engine returned mid-synthesis — task cancelled, but the
+               audio_lock ensures Sally waits for the backchannel to
+               finish before starting her own TTS.
+
+        CancelledError must be re-raised so the asyncio.Task ends in a
+        cancelled state and the runner's `_cancel_backchannel` can
+        await it cleanly.
+        """
         try:
-            async for chunk in self._tts.synthesize(processed):
-                if first_frame:
-                    dt_ms = (time.monotonic() - t0) * 1000
-                    logger.info(
-                        "TTS first-frame",
-                        extra={"first_frame_ms": round(dt_ms), "text": processed[:80]},
-                    )
-                    first_frame = False
-                await self._audio_source.capture_frame(chunk.frame)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("TTS failed for %r: %s", processed[:60], exc)
+            await asyncio.sleep(_BACKCHANNEL_DELAY_S)
+        except asyncio.CancelledError:
+            raise
+
+        current_phase = self._adapter.current_phase
+        now = time.monotonic()
+        seconds_since_last = (
+            now - self._last_backchannel_at if self._last_backchannel_at > 0 else float("inf")
+        )
+        if not should_fire_mid_engine(
+            personality=self._personality,
+            phase=current_phase,
+            seconds_since_last=seconds_since_last,
+        ):
+            return
+
+        phrase = pick_backchannel(
+            self._personality,
+            self._recently_used_backchannels,
+        )
+        logger.info(
+            "Backchannel firing",
+            extra={
+                "phrase": phrase,
+                "phase": current_phase,
+                "personality": self._personality,
+            },
+        )
+        # _speak acquires audio_lock — if Sally's real response raced
+        # us to it, _speak would have to wait for us; but _speak is
+        # awaited AFTER engine.turn(), and cancel-on-completion means
+        # we're already cancelled by that point unless we started
+        # emitting before cancellation.
+        try:
+            await self._speak(phrase)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("Backchannel synthesis failed (non-fatal)")
+            return
+        self._last_backchannel_at = time.monotonic()
+        self._recently_used_backchannels.append(phrase)
+        self._recently_used_backchannels = self._recently_used_backchannels[-2:]
+
+    async def _cancel_backchannel(self, task: asyncio.Task[None]) -> None:
+        """Cancel + await a backchannel task without raising.
+
+        If the task already completed (either fired a phrase cleanly
+        or gated out), cancel is a no-op. If it's still sleeping or
+        mid-synthesis, cancel interrupts it. Awaiting surfaces any
+        exceptions except CancelledError, which we swallow.
+        """
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
