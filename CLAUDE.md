@@ -68,10 +68,14 @@ c7d63ca  Day 2B: lock voice picks from audition — Jessica/Alice/Thandi
 
 ## 4. Environment
 
-- **Python:** 3.11.15 (installed via Homebrew). The venv lives at `./venv/`.
+- **Python:** 3.12.13 (installed via Homebrew). The venv lives at `./venv/`.
   Activate with `source venv/bin/activate` before any Python work.
-- **Deps:** `backend/voice_agent/requirements.txt` — installs fine on 3.11.
+  Bumped from 3.11 on Day 4 because `backend/app/layers/comprehension.py`
+  uses PEP 701 nested triple-quoted f-strings (3.12+ only). livekit-agents
+  1.5.4, Deepgram + Cartesia plugins all support 3.12 without issue.
+- **Deps:** `backend/voice_agent/requirements.txt` — installs fine on 3.12.
   3.9 (system default) does NOT work with livekit-agents 1.5.4.
+  3.11 does NOT work with the frozen Phase 1 engine.
 - **.env** is gitignored. Contains:
   ```
   LIVEKIT_URL          wss://sally-sells-580wrkyt.livekit.cloud

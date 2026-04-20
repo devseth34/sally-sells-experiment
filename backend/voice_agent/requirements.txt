@@ -27,6 +27,7 @@ reportlab
 livekit-agents
 livekit-plugins-deepgram
 livekit-plugins-cartesia
+livekit-plugins-elevenlabs
 deepgram-sdk
 cartesia
 elevenlabs

@@ -66,11 +66,25 @@ def make_tts(personality_key: str) -> lk_tts.TTS:
         # dependency tree, and Day 3 parrot only exercises Cartesia.
         # Lazy import keeps parrot's cold-start fast and means any
         # ElevenLabs install hiccup doesn't break Day 3 dev runs.
+        import os  # noqa: PLC0415
         from livekit.plugins import elevenlabs  # noqa: PLC0415
 
+        # The plugin reads env var `ELEVEN_API_KEY` by default, but our
+        # .env uses `ELEVENLABS_API_KEY` (the name ElevenLabs' own SDK
+        # uses). Pass through explicitly so callers don't need to
+        # duplicate the key under two names.
+        api_key = os.environ.get("ELEVENLABS_API_KEY") or os.environ.get("ELEVEN_API_KEY")
         return elevenlabs.TTS(
             model="eleven_flash_v2_5",
             voice_id=voice_id,
+            api_key=api_key,
+            # pcm_24000 matches our AudioSource's 24 kHz mono config in
+            # sally.py. Default encoding is mp3_22050_32 which (a) makes
+            # frames that don't match our 24 kHz source (RtcError
+            # "sample_rate and num_channels don't match" on publish), and
+            # (b) wastes CPU decoding mp3 for a realtime pipeline. PCM
+            # straight through is cheaper and pitch-correct.
+            encoding="pcm_24000",
             # Flash v2.5 accepts speed via voice_settings — plugin exposes
             # it as a top-level kwarg, forwarding to the API.
             voice_settings=elevenlabs.VoiceSettings(
