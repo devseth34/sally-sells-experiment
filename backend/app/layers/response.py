@@ -269,15 +269,30 @@ THE OPPORTUNITY (DO NOT MENTION BEFORE OWNERSHIP PHASE):
 - The invitation page is free — no paywall. They fill out a form and applications are reviewed personally.
 - Target: Mortgage professionals — loan officers, brokers, branch managers, executives
 
-WHEN TO MENTION THE OPPORTUNITY:
-- Before OWNERSHIP phase: NEVER. You're just having a conversation about their mortgage operation.
+WHEN TO PROACTIVELY MENTION THE OPPORTUNITY:
+- Before OWNERSHIP phase: NEVER bring up the AI Academy, invitation process, or pitch on your own. You're having a conversation about their mortgage operation.
 - OWNERSHIP phase: Follow the NEPQ commitment sequence above.
 - COMMITMENT phase: They're interested. Share the invitation link and close warmly.
+
+ANSWERING DIRECT BRAND QUESTIONS (any phase — this is NOT pitching):
+If the prospect directly asks "what is 100x?" / "what does 100x do?" / "who is Nik Shah?" / "what's the AI Academy?", you MUST answer briefly then redirect. Refusing to answer sounds evasive and kills trust in the first 30 seconds of a voice call.
+
+RULES for brand answers:
+- ONE short factual sentence, then IMMEDIATELY redirect with a discovery question relevant to the current phase.
+- Do NOT describe the invitation process, outcomes, pricing, or testimonials.
+- Do NOT pitch, hype, or expand.
+- Total response: 2 sentences max.
+
+Factual reference — use these exact framings, then pivot:
+- "What is 100x?" / "What does 100x do?" → "100x helps mortgage teams figure out where AI can actually move the needle in their business. What side of mortgage are you on?"
+- "Who is Nik Shah?" → "Nik Shah is our CEO. He works directly with teams on their AI strategy. How'd you end up in mortgage yourself?"
+- "What's the AI Academy?" → "It's our program for mortgage teams, but I'll come back to the details once I understand what you're working on. What does your day usually look like?"
+- If they push for more details before OWNERSHIP: "Happy to walk through the specifics once I understand your situation better — can't recommend anything until I get where you're coming from."
 
 HARD RULES:
 1. ONE question per response max. Never stack questions with "and" or "like".
 2. Keep responses SHORT. 1-2 sentences in phases 1-4. Get to your question fast.
-3. NEVER mention 100x, Nik Shah, or the AI Academy before OWNERSHIP phase.
+3. NEVER PROACTIVELY pitch 100x, the AI Academy, or the invitation process before OWNERSHIP phase. BUT if the prospect asks directly ("what is 100x?", "who is Nik Shah?", "what's the AI Academy?"), answer in ONE brief sentence per "ANSWERING DIRECT BRAND QUESTIONS" above, then redirect. Refusing to answer breaks trust.
 4. NEVER give advice or recommendations before OWNERSHIP phase. Only questions.
 5. NO hype words: guaranteed, revolutionary, game-changing, cutting-edge, transform, unlock, skyrocket, supercharge, unleash, incredible, amazing, powerful.
 6. NEVER start your response with the prospect's words as a fragment.
@@ -340,17 +355,68 @@ EARLY_PHASES = {
     NepqPhase.PROBLEM_AWARENESS, NepqPhase.SOLUTION_AWARENESS,
 }
 
-# Phase-aware fallback responses for circuit breaker
+# Phase-aware fallback pools for circuit breaker.
+# Each phase has multiple options; _pick_fallback picks deterministically
+# by hashing (phase + last_user_message) so identical inputs still vary
+# across conversations but don't flicker within one turn. Why: a single
+# hardcoded string per phase produced verbatim repetition when the
+# breaker fired on consecutive turns (observed 2026-04-21 Day 6 feel-check).
 FALLBACK_RESPONSES = {
-    "CONNECTION": "What got you interested in the AI side of things?",
-    "SITUATION": "Walk me through what a typical Monday looks like for you.",
-    "PROBLEM_AWARENESS": "When was the last time that really slowed you down?",
-    "SOLUTION_AWARENESS": "If you could fix one thing about that process tomorrow, what would it be?",
-    "CONSEQUENCE": "What happens to your team if nothing changes in the next 6 months?",
-    "OWNERSHIP": "Based on everything you've shared, do you feel like having a clear AI plan could help?",
-    "COMMITMENT": "Want me to send over the details so you can take a look?",
+    "CONNECTION": [
+        "What got you interested in the AI side of things?",
+        "What brings you into this space right now?",
+        "What's your role these days?",
+        "What's been on your mind around AI lately?",
+    ],
+    "SITUATION": [
+        "Walk me through what a typical Monday looks like for you.",
+        "How does your day usually start?",
+        "What's your team setup like right now?",
+    ],
+    "PROBLEM_AWARENESS": [
+        "When was the last time that really slowed you down?",
+        "Where does that usually bite you the hardest?",
+        "What part of that feels most frustrating day to day?",
+    ],
+    "SOLUTION_AWARENESS": [
+        "If you could fix one thing about that process tomorrow, what would it be?",
+        "What would 'good' actually look like for you?",
+        "If that piece got solved, what changes first?",
+    ],
+    "CONSEQUENCE": [
+        "What happens to your team if nothing changes in the next 6 months?",
+        "What's the real cost of letting that continue?",
+        "If you played that forward a year, what does it look like?",
+    ],
+    "OWNERSHIP": [
+        "Based on everything you've shared, do you feel like having a clear AI plan could help?",
+        "Do you feel like a customized AI strategy could actually move the needle here?",
+    ],
+    "COMMITMENT": [
+        "Want me to send over the details so you can take a look?",
+        "Ready to take the next step?",
+    ],
 }
-FALLBACK_DEFAULT = "What's been the biggest challenge with that?"
+FALLBACK_DEFAULTS = [
+    "What's been the biggest challenge with that?",
+    "Where does that usually come up?",
+    "What part of that feels hardest?",
+]
+
+
+def _pick_fallback(phase: str, last_user_message: str) -> str:
+    """Deterministically pick a fallback for (phase, user_message).
+
+    Uses hash() over phase + user_message so the same input always maps
+    to the same fallback (no flicker within a turn), while different
+    user messages across turns map to different fallbacks (kills the
+    verbatim repetition that Day 6 feel-check surfaced).
+    """
+    options = FALLBACK_RESPONSES.get(phase, FALLBACK_DEFAULTS)
+    if not options:
+        return FALLBACK_DEFAULTS[0]
+    idx = hash(f"{phase}|{last_user_message}") % len(options)
+    return options[idx]
 
 
 def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: bool = False, last_user_message: str = "", current_phase: str = "") -> str:
@@ -398,7 +464,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
     for word in FORBIDDEN_WORDS:
         if word in text_lower:
             logger.warning(f"Circuit breaker: forbidden word '{word}' detected")
-            return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
+            return _pick_fallback(current_phase, last_user_message)
 
     # Check 3: Forbidden phrases (match whole words/phrases, not substrings)
     for phrase in FORBIDDEN_PHRASES:
@@ -461,20 +527,30 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
                         response_text = response_text[cut_pos + 1:].strip()
                         logger.warning("Circuit breaker: fragment echo stripped, keeping question only")
 
-    # Check 5: Pitching before Consequence (skip if user is asking about Sally's identity)
+    # Check 5: Pitching before Consequence (skip when user is asking an identity
+    # or brand question — Sally is permitted to answer those briefly per
+    # SALLY_PERSONA "ANSWERING DIRECT BRAND QUESTIONS"). Broad brand-term
+    # presence check is more robust than a narrow keyword-phrase list, which
+    # missed real phrasings like "tell me about hundred x" or "what does 100x
+    # do for me" during Day 6 feel-check.
     identity_keywords = [
         "your name", "who are you", "who is this", "what company",
         "where are you from", "who am i talking to", "what's your name",
         "whats your name", "who r u", "introduce yourself",
     ]
-    is_identity_question = any(kw in (last_user_message or "").lower() for kw in identity_keywords)
+    brand_terms = ["100x", "hundred x", "nik shah", "ai academy", "the academy"]
+    user_msg_lower = (last_user_message or "").lower()
+    is_identity_question = (
+        any(kw in user_msg_lower for kw in identity_keywords)
+        or any(term in user_msg_lower for term in brand_terms)
+    )
 
     if target_phase in EARLY_PHASES and not is_identity_question:
         pitch_signals = ["ai academy", "nik shah", "100x", "request an invitation"]
         for signal in pitch_signals:
             if signal in text_lower:
                 logger.warning(f"Circuit breaker: pitch signal '{signal}' in early phase {target_phase.value}")
-                return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
+                return _pick_fallback(current_phase, last_user_message)
 
     # Check 5: Too long — phase-aware sentence limit (relaxed for closing messages with links)
     phase_max = get_response_length(target_phase).get("max_sentences", 4)
@@ -497,7 +573,7 @@ def circuit_breaker(response_text: str, target_phase: NepqPhase, is_closing: boo
     clean_words = [w for w in response_text.split() if len(w) > 1 or w.lower() in ("i", "a")]
     if len(clean_words) < 4:
         logger.warning("Circuit breaker: response too short after cleaning, using fallback")
-        return FALLBACK_RESPONSES.get(current_phase, FALLBACK_DEFAULT)
+        return _pick_fallback(current_phase, last_user_message)
 
     return response_text
 

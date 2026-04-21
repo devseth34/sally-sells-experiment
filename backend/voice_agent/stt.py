@@ -43,10 +43,14 @@ def make_stt() -> deepgram.STT:
         # Filler words ("um", "uh") kept — Layer 2 disfluency rules in
         # persona_config may use them to detect hesitation.
         filler_words=True,
-        # 25 ms VAD endpointing matches Deepgram's recommended default
-        # for low-latency conversational agents. Higher values add lag
-        # to end-of-utterance detection (see latency budget in CLAUDE.md).
-        endpointing_ms=25,
+        # 300 ms VAD endpointing is Deepgram's recommended value for
+        # conversational voice agents — balances responsiveness with
+        # tolerance for natural inter-word pauses. 25 ms (prior value)
+        # fired END_OF_SPEECH on every micro-gap, which inflated the
+        # observed asr_ms_since_eos tail to 8-14 s during Day 6 feel-check
+        # (user speech continued past premature EOS anchors). 300 ms
+        # waits for a real end-of-utterance while staying snappy.
+        endpointing_ms=300,
         # Plugin renamed `keyterms` -> `keyterm` to match Deepgram API
         # naming; the old kwarg still works but emits a deprecation
         # warning. Using the new name here.
