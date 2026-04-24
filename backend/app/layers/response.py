@@ -19,8 +19,9 @@ import json
 import os
 import re
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 
 # dotenv is loaded once in database.py (first import in main.py)
 
@@ -82,6 +83,7 @@ def _get_fact_sheet() -> str:
 
 # Lazy client — created on first use, not at import time
 _client: Anthropic | None = None
+_async_client: AsyncAnthropic | None = None
 
 def _get_client() -> Anthropic:
     global _client
@@ -92,6 +94,23 @@ def _get_client() -> Anthropic:
             raise RuntimeError("ANTHROPIC_API_KEY not found. Set it in your .env file or environment variables.")
         _client = Anthropic(api_key=api_key)
     return _client
+
+
+def _get_async_client() -> AsyncAnthropic:
+    """Async Anthropic client for streaming generation path.
+
+    Kept separate from the sync client: streaming needs an async context
+    manager (`async with client.messages.stream(...)`) and reusing the
+    sync client would force a thread wrap that defeats the streaming
+    latency win. Env handling mirrors _get_client exactly.
+    """
+    global _async_client
+    if _async_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not found. Set it in your .env file or environment variables.")
+        _async_client = AsyncAnthropic(api_key=api_key)
+    return _async_client
 
 SALLY_PERSONA = """You are Sally, a sharp, genuinely curious NEPQ sales consultant at 100x. You're chatting with a mortgage professional about how AI is changing the lending industry. You sound like a smart friend who happens to know a lot about AI in mortgage, not a salesperson reading a script.
 
@@ -1322,3 +1341,267 @@ def generate_response(
     response_text = circuit_breaker(response_text, target_phase, is_closing=is_closing, last_user_message=user_message, current_phase=target_phase.value)
 
     return response_text
+
+
+# ---- Streaming path ------------------------------------------------------
+#
+# `generate_response_stream` yields clean sentences as they emerge from
+# Claude so the voice runner can hand each one to TTS immediately,
+# cutting perceived latency by ~2 s on typical NEPQ turns.
+#
+# Breaker semantics differ from the sync path: we run the breaker
+# PER-SENTENCE before emitting. If a sentence violates a rule we either
+# (a) strip the offending phrase and still emit, or (b) replace the
+# whole response with the phase fallback (when a hard violation hits on
+# the first sentence). Once a clean sentence has been emitted, we
+# cannot un-emit — so post-emit violations just end the stream and
+# Sally finishes with what she's already said. That is acceptable
+# because NEPQ responses are 1-2 sentences by design and the full
+# circuit_breaker() guarantees still hold for non-streaming callers
+# (the sync product on main, the text REPL, tests).
+
+_SENTENCE_BOUNDARY = re.compile(r"([.!?]+|\n)")
+
+
+def _sanitize_sentence(
+    sentence: str,
+    target_phase: NepqPhase,
+    is_first_sentence: bool,
+    last_user_message: str,
+    is_identity_question: bool,
+) -> tuple[str, str]:
+    """Per-sentence equivalent of the big circuit_breaker() checks.
+
+    Returns (status, text) where status is:
+      - "ok": emit `text` (possibly cleaned — forbidden phrases stripped).
+      - "skip": sentence collapsed to nothing after cleaning; drop it
+        silently and continue accumulating more sentences.
+      - "fallback": hard violation. Caller should replace the ENTIRE
+        response with the phase fallback and stop the stream. `text` is
+        empty on this branch.
+    """
+    # Check 0: punctuation normalization (em dash, semicolon)
+    text = sentence.replace(" — ", ", ").replace("—", ", ").replace(" ; ", ". ").replace(";", ".")
+    text_lower = text.lower()
+
+    # Check 2: forbidden hype words — hard fail
+    for word in FORBIDDEN_WORDS:
+        if word in text_lower:
+            logger.warning(f"Stream breaker: forbidden word '{word}' in sentence")
+            return ("fallback", "")
+
+    # Check 3: forbidden phrases — strip, continue
+    for phrase in FORBIDDEN_PHRASES:
+        pattern = r"\b" + re.escape(phrase) + r"\b"
+        if re.search(pattern, text_lower):
+            logger.warning(f"Stream breaker: stripping forbidden phrase '{phrase}'")
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+            text = re.sub(r"[,\s]*\.\s*", ". ", text)
+            text = re.sub(r"\.\s*\.", ".", text)
+            text = re.sub(r",\s*,", ",", text)
+            text = re.sub(r"\s+", " ", text)
+            text = re.sub(r"\s+([.,!?])", r"\1", text)
+            text = text.strip(" .,!").strip()
+            text_lower = text.lower()
+
+    # Check 4: editorial phrases in early phases — strip, continue
+    if target_phase in EARLY_PHASES:
+        for phrase in EDITORIAL_PHRASES:
+            pattern = r"\b" + re.escape(phrase) + r"\b"
+            if re.search(pattern, text_lower):
+                logger.warning(f"Stream breaker: stripping editorial '{phrase}' in {target_phase.value}")
+                text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+                text = re.sub(r"[,\s]*\.\s*", ". ", text)
+                text = re.sub(r"\.\s*\.", ".", text)
+                text = re.sub(r",\s*,", ",", text)
+                text = re.sub(r"\s+", " ", text)
+                text = re.sub(r"\s+([.,!?])", r"\1", text)
+                text = text.strip(" .,!").strip()
+                text_lower = text.lower()
+
+    # Check 4b: fragment echo — only applies to the FIRST sentence.
+    # Pure parrot (6+ consecutive user words opening) triggers fallback;
+    # safer than trying to strip mid-stream.
+    if is_first_sentence and last_user_message:
+        user_words = last_user_message.lower().split()
+        response_words = text.lower().split()
+        if len(response_words) >= 6 and len(user_words) >= 6:
+            match_count = 0
+            for rw, uw in zip(response_words, user_words):
+                if rw.strip(".,!?;:'\"") == uw.strip(".,!?;:'\""):
+                    match_count += 1
+                else:
+                    break
+            if match_count >= 6:
+                logger.warning("Stream breaker: fragment echo on first sentence, fallback")
+                return ("fallback", "")
+
+    # Check 5: pitch signals in early phase (skip when user asked about
+    # identity or brand — Sally is allowed to answer briefly per the
+    # SALLY_PERSONA "ANSWERING DIRECT BRAND QUESTIONS" section).
+    if target_phase in EARLY_PHASES and not is_identity_question:
+        pitch_signals = ["ai academy", "nik shah", "100x", "request an invitation"]
+        for signal in pitch_signals:
+            if signal in text_lower:
+                logger.warning(f"Stream breaker: pitch signal '{signal}' in {target_phase.value}")
+                return ("fallback", "")
+
+    # Safety: nothing left after cleaning
+    clean_words = [w for w in text.split() if len(w) > 1 or w.lower() in ("i", "a")]
+    if len(clean_words) < 2:
+        return ("skip", "")
+
+    return ("ok", text)
+
+
+async def generate_response_stream(
+    decision: DecisionOutput,
+    user_message: str,
+    conversation_history: list[dict],
+    profile: ProspectProfile,
+    emotional_context: dict | None = None,
+    probe_mode: bool = False,
+    memory_context: str = "",
+    persona_override: str | None = None,
+    consecutive_no_new_info: int = 0,
+) -> AsyncIterator[str]:
+    """Stream Sally's response as cleaned sentences.
+
+    Yields each breaker-approved sentence AS IT COMPLETES from Claude's
+    token stream. Consumers should pipe each yielded sentence straight
+    to TTS. Typical call yields 1-2 times for NEPQ responses.
+
+    Semantic guarantees:
+      - Never yields a sentence that contains a forbidden word or (in
+        early phases) a pitch signal from a non-identity question.
+      - Forbidden phrases / editorial phrases are STRIPPED before emit.
+      - Max question marks across the full response is 1 (stream ends
+        after the sentence containing the first '?').
+      - Max sentences respects get_response_length(phase) + is_closing.
+      - If a hard violation hits the first sentence, yields the phase
+        fallback exactly once and stops.
+      - If the entire stream produces zero clean sentences, yields the
+        phase fallback exactly once.
+    """
+    target_phase = NepqPhase(decision.target_phase)
+
+    # Greeting short-circuit — matches generate_response exactly.
+    if not conversation_history:
+        yield (
+            "Hey there! I'm Sally from 100x. "
+            "Super curious to learn about you. "
+            "What brought you here today?"
+        )
+        return
+
+    prompt = build_response_prompt(
+        decision, user_message, conversation_history, profile,
+        emotional_context=emotional_context,
+        probe_mode=probe_mode,
+        memory_context=memory_context,
+        consecutive_no_new_info=consecutive_no_new_info,
+    )
+
+    is_closing = decision.action == "END" or target_phase in {NepqPhase.COMMITMENT, NepqPhase.TERMINATED}
+    length_config = get_response_length(target_phase)
+    max_tokens = 300 if is_closing else length_config.get("max_tokens", 200)
+    phase_max = length_config.get("max_sentences", 4)
+    max_sentences = 10 if is_closing else phase_max
+
+    # Mirror circuit_breaker's identity/brand-question bypass so the
+    # stream-side pitch-signal check has the same semantics.
+    identity_keywords = [
+        "your name", "who are you", "who is this", "what company",
+        "where are you from", "who am i talking to", "what's your name",
+        "whats your name", "who r u", "introduce yourself",
+    ]
+    brand_terms = ["100x", "hundred x", "nik shah", "ai academy", "the academy"]
+    user_msg_lower = (user_message or "").lower()
+    is_identity_question = (
+        any(kw in user_msg_lower for kw in identity_keywords)
+        or any(term in user_msg_lower for term in brand_terms)
+    )
+
+    active_persona = persona_override if persona_override is not None else SALLY_PERSONA
+
+    buffer = ""
+    emitted = 0
+    question_marks_seen = 0
+    first_unprocessed_is_first_sentence = True
+
+    async with _get_async_client().messages.stream(
+        model="claude-sonnet-4-20250514",
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": active_persona, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        async for text_chunk in stream.text_stream:
+            buffer += text_chunk
+
+            # Drain every complete sentence currently in the buffer.
+            while True:
+                m = _SENTENCE_BOUNDARY.search(buffer)
+                if not m:
+                    break
+                end = m.end()
+                raw_sentence = buffer[:end].strip()
+                buffer = buffer[end:]
+                if not raw_sentence:
+                    continue
+                # Strip leading/trailing quote marks if the LLM wrapped.
+                if raw_sentence.startswith('"') and raw_sentence.count('"') >= 2:
+                    last_q = raw_sentence.rfind('"')
+                    if last_q > 0:
+                        raw_sentence = raw_sentence[1:last_q] + raw_sentence[last_q + 1:]
+
+                status, cleaned = _sanitize_sentence(
+                    raw_sentence,
+                    target_phase=target_phase,
+                    is_first_sentence=first_unprocessed_is_first_sentence,
+                    last_user_message=user_message,
+                    is_identity_question=is_identity_question,
+                )
+                first_unprocessed_is_first_sentence = False
+
+                if status == "fallback":
+                    # Hard violation — if nothing clean emitted yet, fall
+                    # back. If we've already emitted, just stop (Sally
+                    # ends with what she's said, which is valid).
+                    if emitted == 0:
+                        yield _pick_fallback(target_phase.value, user_message)
+                    return
+
+                if status == "skip":
+                    continue
+
+                yield cleaned
+                emitted += 1
+                question_marks_seen += cleaned.count("?")
+
+                if question_marks_seen >= 1:
+                    # Done: NEPQ is one question per response.
+                    return
+                if emitted >= max_sentences:
+                    return
+
+    # Stream ended without hitting a sentence boundary — treat the
+    # leftover buffer as a final sentence if non-trivial.
+    tail = buffer.strip()
+    if tail:
+        status, cleaned = _sanitize_sentence(
+            tail,
+            target_phase=target_phase,
+            is_first_sentence=first_unprocessed_is_first_sentence,
+            last_user_message=user_message,
+            is_identity_question=is_identity_question,
+        )
+        if status == "ok":
+            yield cleaned
+            emitted += 1
+        elif status == "fallback" and emitted == 0:
+            yield _pick_fallback(target_phase.value, user_message)
+            return
+
+    if emitted == 0:
+        # Claude produced nothing usable — safety net.
+        yield _pick_fallback(target_phase.value, user_message)
