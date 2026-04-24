@@ -163,6 +163,10 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     engine_ms = collect("engine_ms")
     asr_ms = collect("asr_ms")
     tts_ms = collect("tts_first_frame_ms")
+    # Fields added 2026-04-24 — absent on older rows, present going fwd.
+    user_latency_ms = collect("user_latency_ms")
+    engine_dispatch_ms = collect("engine_dispatch_ms")
+    utterance_duration_ms = collect("utterance_duration_ms")
 
     l1_models = collections.Counter(r.get("l1_model") or "null" for r in rows)
     primary_hits = l1_models.get(PRIMARY_L1_MODEL, 0)
@@ -176,6 +180,9 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "engine_ms": _latency_stats(engine_ms),
         "asr_ms": _latency_stats(asr_ms),
         "tts_first_frame_ms": _latency_stats(tts_ms),
+        "user_latency_ms": _latency_stats(user_latency_ms),
+        "engine_dispatch_ms": _latency_stats(engine_dispatch_ms),
+        "utterance_duration_ms": _latency_stats(utterance_duration_ms),
         "phase_changes": phase_changes,
         "phases_distribution": dict(phases_reached),
         "l1_model_distribution": dict(l1_models),
@@ -199,6 +206,9 @@ def _empty_block() -> dict[str, Any]:
         "engine_ms": _latency_stats([]),
         "asr_ms": _latency_stats([]),
         "tts_first_frame_ms": _latency_stats([]),
+        "user_latency_ms": _latency_stats([]),
+        "engine_dispatch_ms": _latency_stats([]),
+        "utterance_duration_ms": _latency_stats([]),
         "phase_changes": 0,
         "phases_distribution": {},
         "l1_model_distribution": {},
@@ -292,13 +302,23 @@ def format_human(summary: dict[str, Any]) -> str:
 
 
 def _add_latency_block(lines: list[str], block: dict[str, Any]) -> None:
-    for key, label in [("engine_ms", "engine"), ("asr_ms", "asr"), ("tts_first_frame_ms", "tts")]:
+    # user_latency_ms is the user-perceived total (post-2026-04-24 fix);
+    # the others decompose it. Shown first so humans see the headline.
+    latency_fields = [
+        ("user_latency_ms", "USER ↤ 👂"),
+        ("engine_dispatch_ms", "dispatch"),
+        ("engine_ms", "engine"),
+        ("tts_first_frame_ms", "tts"),
+        ("asr_ms", "asr_tail"),
+        ("utterance_duration_ms", "utter_dur"),
+    ]
+    for key, label in latency_fields:
         stats = block.get(key, {})
         n = stats.get("n", 0)
         if n == 0:
             continue
         lines.append(
-            f"  {label:<8} n={n:<4}  "
+            f"  {label:<10} n={n:<4}  "
             f"p50={_fmt_ms(stats.get('p50'))}  "
             f"p95={_fmt_ms(stats.get('p95'))}  "
             f"mean={_fmt_ms(stats.get('mean'))}"

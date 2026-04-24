@@ -101,6 +101,21 @@ class TurnMetrics:
     `call_id` is the LiveKit job.id, stable for a voice call. Rows from
     different calls (and different prewarm subprocesses writing to the
     same file) can be demuxed via this key.
+
+    Latency decomposition (2026-04-24 rework):
+      user_latency_ms = engine_dispatch_ms + engine_ms + tts_first_frame_ms
+      where engine_dispatch_ms ≈ asr_ms (they differ by a few ms of
+      coroutine scheduling overhead between "FINAL_TRANSCRIPT received"
+      and "adapter.turn() starts"). `user_latency_ms` is the canonical
+      user-perceived number; the components decompose it.
+
+      `asr_ms` semantics were silently broken before 2026-04-24: it was
+      measuring inter-utterance gap, not the actual post-speech tail.
+      New code in sally.py computes it as `max(0, final_t -
+      end_of_speech_t)` — see the _read_transcripts comment for why.
+
+      Fields added 2026-04-24 default to None so older sink rows still
+      load cleanly in cds_rollup.
     """
 
     call_id: str
@@ -116,6 +131,9 @@ class TurnMetrics:
     l1_model: Optional[str]
     tts_first_frame_ms: Optional[float]
     ended: bool
+    utterance_duration_ms: Optional[float] = None
+    engine_dispatch_ms: Optional[float] = None
+    user_latency_ms: Optional[float] = None
     timestamp: float = field(default_factory=time.time)
 
 

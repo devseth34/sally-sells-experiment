@@ -63,6 +63,19 @@ from backend.voice_agent.pronunciation import preprocess
 
 logger = logging.getLogger("sally-voice-runner")
 
+
+def _safe_ms_between(earlier: float | None, later: float | None) -> float | None:
+    """Clamp-to-zero ms delta between two monotonic() timestamps.
+
+    Returns None if either endpoint is missing. Clamps negative deltas
+    to 0 so a rarely-seen "later event recorded before earlier event"
+    (race between event channels) doesn't produce nonsense negatives
+    in the metrics sink.
+    """
+    if earlier is None or later is None:
+        return None
+    return max(0.0, (later - earlier) * 1000)
+
 # Delay after engine.turn() starts before the backchannel fires. If the
 # engine returns before this elapses (fast path / cached responses), the
 # task is cancelled and nothing plays. 500ms chosen to overlap with
@@ -162,14 +175,30 @@ class SallyVoiceRunner:
             )
             await self._speak(greeting)
 
-    async def on_user_turn(self, transcript: str, *, asr_ms: float | None = None) -> None:
+    async def on_user_turn(
+        self,
+        transcript: str,
+        *,
+        asr_ms: float | None = None,
+        speech_end_t: float | None = None,
+        utterance_duration_ms: float | None = None,
+    ) -> None:
         """Drive one engine turn end-to-end. Safe to call from an STT
         final handler; if a turn is already in flight, this transcript
         is dropped with a log line (see module docstring on turn-taking).
 
-        `asr_ms` is the Deepgram-final latency measured since end-of-speech
-        in sally.py. Threaded through so the per-turn metrics row can
-        record it alongside engine_ms and tts_first_frame_ms.
+        Timing params (all monotonic-based, all optional):
+          `asr_ms`: transcript-available tail after END_OF_SPEECH, i.e.
+              how long the user waited post-speech-end for the
+              transcript. See sally.py _read_transcripts for derivation.
+              Previously mismeasured as inter-utterance gap; fixed
+              Day 6 2026-04-24 alongside the richer event logging.
+          `speech_end_t`: monotonic() timestamp of END_OF_SPEECH for
+              this utterance. Used to compute engine_dispatch_ms and
+              user_latency_ms (the real user-perceived metrics).
+          `utterance_duration_ms`: SPEECH_STARTED → END_OF_SPEECH delta.
+              Not latency — useful for correlating asr_ms with how
+              long the user actually spoke.
         """
         if not transcript.strip():
             return
@@ -186,7 +215,9 @@ class SallyVoiceRunner:
             response_text = ""
             ended = False
             first_frame_ms: float | None = None
+            first_frame_t: float | None = None
             engine_ms: float | None = None
+            engine_start_t: float | None = None
             # Start the backchannel task concurrently with the engine
             # call. It sleeps _BACKCHANNEL_DELAY_S before firing, so a
             # fast engine return cancels it before any audio goes out.
@@ -195,9 +226,9 @@ class SallyVoiceRunner:
                 name=f"backchannel-turn-{self._turn_index + 1}",
             )
             try:
-                t0 = time.monotonic()
+                engine_start_t = time.monotonic()
                 response_text, ended = await self._adapter.turn(transcript)
-                engine_ms = (time.monotonic() - t0) * 1000
+                engine_ms = (time.monotonic() - engine_start_t) * 1000
                 logger.info(
                     "Engine turn complete",
                     extra={
@@ -216,6 +247,9 @@ class SallyVoiceRunner:
                     asr_ms=asr_ms,
                     engine_ms=None,
                     tts_first_frame_ms=None,
+                    utterance_duration_ms=utterance_duration_ms,
+                    engine_dispatch_ms=_safe_ms_between(speech_end_t, engine_start_t),
+                    user_latency_ms=None,
                     ended=False,
                     phase_stats=self._adapter.last_turn_stats,
                 )
@@ -227,12 +261,19 @@ class SallyVoiceRunner:
                 await self._cancel_backchannel(bc_task)
 
             if response_text:
-                first_frame_ms = await self._speak(response_text)
+                first_frame_ms, first_frame_t = await self._speak(response_text)
             # Pacing: post-response pause scales with personality.
             # sally_direct is terser + faster to re-engage; sally_warm
             # lingers. Do this BEFORE checking `ended` so a farewell
             # line plus pause feels natural before teardown.
             await asyncio.sleep(self._pause_s)
+
+            # user_latency_ms is THE user-perceived number: from the
+            # moment the user stopped speaking to the moment Sally's
+            # first audio frame landed. Everything else (asr, engine,
+            # tts) decomposes this total.
+            user_latency_ms = _safe_ms_between(speech_end_t, first_frame_t)
+            engine_dispatch_ms = _safe_ms_between(speech_end_t, engine_start_t)
 
             self._emit_metrics(
                 user_text=transcript,
@@ -240,6 +281,9 @@ class SallyVoiceRunner:
                 asr_ms=asr_ms,
                 engine_ms=engine_ms,
                 tts_first_frame_ms=first_frame_ms,
+                utterance_duration_ms=utterance_duration_ms,
+                engine_dispatch_ms=engine_dispatch_ms,
+                user_latency_ms=user_latency_ms,
                 ended=ended,
                 phase_stats=self._adapter.last_turn_stats,
             )
@@ -256,6 +300,9 @@ class SallyVoiceRunner:
         asr_ms: float | None,
         engine_ms: float | None,
         tts_first_frame_ms: float | None,
+        utterance_duration_ms: float | None,
+        engine_dispatch_ms: float | None,
+        user_latency_ms: float | None,
         ended: bool,
         phase_stats: dict,
     ) -> None:
@@ -285,21 +332,30 @@ class SallyVoiceRunner:
                     engine_ms=engine_ms,
                     l1_model=l1_model,
                     tts_first_frame_ms=tts_first_frame_ms,
+                    utterance_duration_ms=utterance_duration_ms,
+                    engine_dispatch_ms=engine_dispatch_ms,
+                    user_latency_ms=user_latency_ms,
                     ended=ended,
                 )
             )
         except Exception:  # noqa: BLE001
             logger.exception("Metrics emit failed (non-fatal)")
 
-    async def _speak(self, text: str) -> float | None:
+    async def _speak(self, text: str) -> tuple[float | None, float | None]:
         """Synthesize through the personality's TTS and publish.
 
-        Returns the TTS first-frame latency in ms (None if the TTS
-        failed before emitting a frame). Callers use the return for
-        metrics; not returning it would mean per-turn rows can't
-        include tts_first_frame_ms for audit. Swallows TTS failures —
-        same rationale as parrot._speak: a single bad synthesis must
-        not tear down the call.
+        Returns (first_frame_ms, first_frame_t) where:
+          first_frame_ms: TTS first-frame latency in ms, measured from
+              the _speak start (≈ engine-done). Kept for backward-compat
+              with the `tts_first_frame_ms` metric and log line.
+          first_frame_t: absolute monotonic() timestamp when the first
+              audio frame landed. Lets the caller compute
+              user_latency_ms = first_frame_t - speech_end_t cleanly
+              without re-deriving from deltas.
+
+        Both are None if the TTS failed before emitting a frame.
+        Swallows TTS failures — same rationale as parrot._speak: a
+        single bad synthesis must not tear down the call.
 
         Acquires `_audio_lock` for the entire synthesis so concurrent
         backchannel emission never overlaps with Sally's real response
@@ -307,12 +363,14 @@ class SallyVoiceRunner:
         """
         processed = preprocess(text, self._tts_provider)
         first_frame_ms: float | None = None
+        first_frame_t: float | None = None
         async with self._audio_lock:
             t0 = time.monotonic()
             try:
                 async for chunk in self._tts.synthesize(processed):
                     if first_frame_ms is None:
-                        first_frame_ms = (time.monotonic() - t0) * 1000
+                        first_frame_t = time.monotonic()
+                        first_frame_ms = (first_frame_t - t0) * 1000
                         logger.info(
                             "TTS first-frame",
                             extra={"first_frame_ms": round(first_frame_ms), "text": processed[:80]},
@@ -320,7 +378,7 @@ class SallyVoiceRunner:
                     await self._audio_source.capture_frame(chunk.frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TTS failed for %r: %s", processed[:60], exc)
-        return first_frame_ms
+        return first_frame_ms, first_frame_t
 
     async def _fire_backchannel_during_engine(self) -> None:
         """Sleep _BACKCHANNEL_DELAY_S then, if still gated-in, emit one

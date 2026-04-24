@@ -156,10 +156,43 @@ async def entrypoint(ctx: JobContext) -> None:
             stt_stream.end_input()
 
         async def _read_transcripts() -> None:
-            utterance_end_t: float | None = None
+            # Per-utterance timing state. Deepgram fires events in this
+            # typical order: SpeechStarted -> interim Results -> is_final
+            # Results (FINAL_TRANSCRIPT) -> speech_final Results
+            # (END_OF_SPEECH). So FINAL usually arrives BEFORE END, not
+            # after. The original code assumed the reverse — which is
+            # why asr_ms values were huge and uncorrelated with
+            # utterance length. See
+            # venv/.../livekit/plugins/deepgram/stt.py:660-717 for the
+            # plugin's actual event mapping.
+            #
+            # Correct measurement of user-perceived ASR latency:
+            #   asr_tail_ms = max(0, final_t - speech_end_t)
+            # i.e. how long the user waited after stopping for the
+            # transcript to be ready. If FINAL arrived first, tail is 0.
+            # If END arrived first (rare), tail is positive.
+            speech_start_t: float | None = None
+            speech_end_t: float | None = None
+            last_final_t: float | None = None
+
             async for speech_ev in stt_stream:
-                if speech_ev.type == SpeechEventType.END_OF_SPEECH:
-                    utterance_end_t = time.monotonic()
+                if speech_ev.type == SpeechEventType.START_OF_SPEECH:
+                    speech_start_t = time.monotonic()
+                    speech_end_t = None  # new utterance, clear prior end
+                    last_final_t = None
+                    logger.info("STT: SPEECH_STARTED")
+                elif speech_ev.type == SpeechEventType.END_OF_SPEECH:
+                    speech_end_t = time.monotonic()
+                    utt_dur_ms: float | None = None
+                    if speech_start_t is not None:
+                        utt_dur_ms = (speech_end_t - speech_start_t) * 1000
+                    logger.info(
+                        "STT: END_OF_SPEECH",
+                        extra={
+                            "utterance_duration_ms": round(utt_dur_ms) if utt_dur_ms is not None else None,
+                            "final_already_arrived": last_final_t is not None,
+                        },
+                    )
                 elif speech_ev.type == SpeechEventType.FINAL_TRANSCRIPT:
                     text = (
                         speech_ev.alternatives[0].text
@@ -168,20 +201,45 @@ async def entrypoint(ctx: JobContext) -> None:
                     )
                     if not text.strip():
                         continue
-                    asr_ms: float | None = None
-                    if utterance_end_t is not None:
-                        asr_ms = (time.monotonic() - utterance_end_t) * 1000
-                        logger.info(
-                            "ASR final",
-                            extra={"asr_ms_since_eos": round(asr_ms), "text": text},
-                        )
-                        utterance_end_t = None
-                    else:
-                        logger.info("ASR final (no EOS anchor)", extra={"text": text})
+                    final_t = time.monotonic()
+                    last_final_t = final_t
+
+                    # asr_tail_ms: time from user-speech-end to transcript-ready.
+                    # Only meaningful if END_OF_SPEECH for this utterance has
+                    # already fired; otherwise transcript was ready BEFORE VAD
+                    # decided speech ended (tail is conceptually 0 — user
+                    # wasn't waiting on us at that moment).
+                    asr_tail_ms: float | None = None
+                    if speech_end_t is not None:
+                        asr_tail_ms = max(0.0, (final_t - speech_end_t) * 1000)
+
+                    utt_dur_ms = None
+                    if speech_start_t is not None and speech_end_t is not None:
+                        utt_dur_ms = (speech_end_t - speech_start_t) * 1000
+
+                    logger.info(
+                        "ASR final",
+                        extra={
+                            "asr_tail_ms": round(asr_tail_ms) if asr_tail_ms is not None else None,
+                            "utterance_duration_ms": round(utt_dur_ms) if utt_dur_ms is not None else None,
+                            "end_before_final": speech_end_t is not None,
+                            "text": text,
+                        },
+                    )
                     # Kick off turn processing — don't await, so one
                     # long engine turn doesn't block the next ASR read.
                     # The runner's turn_lock drops concurrent finals.
-                    asyncio.create_task(runner.on_user_turn(text, asr_ms=asr_ms))
+                    # speech_end_t passed as monotonic() timestamp so the
+                    # runner can compute user_perceived_latency_ms =
+                    # tts_first_frame_t - speech_end_t after the turn.
+                    asyncio.create_task(
+                        runner.on_user_turn(
+                            text,
+                            asr_ms=asr_tail_ms,
+                            speech_end_t=speech_end_t,
+                            utterance_duration_ms=utt_dur_ms,
+                        )
+                    )
 
         await asyncio.gather(_pump_audio(), _read_transcripts())
 
