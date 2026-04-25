@@ -59,7 +59,11 @@ PERSONALITIES: dict[str, dict] = {
         # hits both. Profile aligns exactly with sally_empathy_plus:
         # warm opener, curious mirror, softness on pain reveal.
         "tts_voice_id": "cgSgspJ2msm6clMCkdW9",
-        "speaking_rate": 0.95,
+        # Lowered 0.95 -> 0.90 on 2026-04-25 after Dev's smoke test
+        # ("some speak too fast"). EL Flash v2.5 honors this directly
+        # via voice_settings.speed; tested at 0.90 still well within the
+        # natural-prosody range Jessica was auditioned at.
+        "speaking_rate": 0.90,
         "backchannel_density": "high",
         "post_response_pause_multiplier": 1.2,
     },
@@ -74,7 +78,11 @@ PERSONALITIES: dict[str, dict] = {
         # restate the prospect's pain and frame the 100x guarantee.
         # Second-highest score in the field; top non-warm-coded.
         "tts_voice_id": "Xb7hH8MSUJpSbSDYk0k2",
-        "speaking_rate": 1.0,
+        # Lowered 1.0 -> 0.92 on 2026-04-25. Alice is "Clear, Engaging
+        # Educator" — at 1.0 the British prosody compounds with
+        # NEPQ-style asks to feel rushed. 0.92 keeps her authoritative
+        # without the educator-on-deadline feel Dev flagged.
+        "speaking_rate": 0.92,
         "backchannel_density": "medium",
         "post_response_pause_multiplier": 1.0,
     },
