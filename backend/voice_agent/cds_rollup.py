@@ -188,6 +188,42 @@ def _summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "l1_model_distribution": dict(l1_models),
         "l1_primary_rate": (primary_hits / non_null) if non_null else None,
         "l1_fallback_rate": (1 - primary_hits / non_null) if non_null else None,
+        "tag_director_stats": _tag_director_stats(rows),
+    }
+
+
+def _tag_director_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate tag director observability across the row set.
+
+    `used_count` = turns where Haiku succeeded (`tag_director_used=True`).
+    `fallback_count` = turns where the director was attempted but failed
+    (so we have a `tag_director_fallback` reason). Latency stats cover
+    only attempted calls (regardless of success). Pre-director rows
+    that don't have any director fields contribute zero to all counts.
+    """
+    used_count = sum(1 for r in rows if r.get("tag_director_used") is True)
+    # Distinct from used_count: a row with success=False still has a
+    # populated fallback_reason (timeout, parse_error, etc.).
+    fallback_rows = [
+        r for r in rows
+        if r.get("tag_director_fallback") and r.get("tag_director_used") is False
+    ]
+    fallback_count = len(fallback_rows)
+    fallback_reasons = collections.Counter(
+        r.get("tag_director_fallback") for r in fallback_rows
+    )
+    # Latency: include any row where the director was attempted (used or
+    # fallen-back), since both paths populate latency_ms.
+    director_latency = [
+        float(r["tag_director_latency_ms"])
+        for r in rows
+        if r.get("tag_director_latency_ms") is not None
+    ]
+    return {
+        "used_count": used_count,
+        "fallback_count": fallback_count,
+        "fallback_reasons": dict(fallback_reasons),
+        "latency": _latency_stats(director_latency),
     }
 
 
@@ -214,6 +250,12 @@ def _empty_block() -> dict[str, Any]:
         "l1_model_distribution": {},
         "l1_primary_rate": None,
         "l1_fallback_rate": None,
+        "tag_director_stats": {
+            "used_count": 0,
+            "fallback_count": 0,
+            "fallback_reasons": {},
+            "latency": _latency_stats([]),
+        },
     }
 
 

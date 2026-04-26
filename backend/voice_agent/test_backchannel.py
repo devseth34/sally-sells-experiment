@@ -197,6 +197,7 @@ class _FakeAdapter:
         self.last_turn_stats: dict = {}
         self.arm_key = "sally_empathy_plus"
         self.ended = False
+        self.last_user_emotion = None  # Phase E field — always None in backchannel tests
 
     @property
     def current_phase(self) -> str:

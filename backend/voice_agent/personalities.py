@@ -66,6 +66,18 @@ PERSONALITIES: dict[str, dict] = {
         "speaking_rate": 0.90,
         "backchannel_density": "high",
         "post_response_pause_multiplier": 1.2,
+        # Tier-aware fields added 2026-04-26 for sally_emotive parity.
+        # Existing 3 arms: only fast tier (Flash); empty tag whitelist;
+        # no inline disfluencies — keeps their CDS sample byte-stable.
+        "tts_models": {"fast": "eleven_flash_v2_5"},
+        "allowed_audio_tags": [],
+        "disfluency_density": 0.0,
+        # tag_director: when True AND allowed_audio_tags is non-empty, the
+        # runner calls Haiku to choose tags + placement instead of the
+        # rules-based expression.decorate() path. Existing 3 arms keep
+        # this False — they're already gated by empty allowed_audio_tags
+        # but the explicit flag makes the schema self-documenting.
+        "tag_director": False,
     },
     "sally_confident": {
         "engine_arm": "sally_nepq",
@@ -85,6 +97,10 @@ PERSONALITIES: dict[str, dict] = {
         "speaking_rate": 0.92,
         "backchannel_density": "medium",
         "post_response_pause_multiplier": 1.0,
+        "tts_models": {"fast": "eleven_flash_v2_5"},
+        "allowed_audio_tags": [],
+        "disfluency_density": 0.0,
+        "tag_director": False,
     },
     "sally_direct": {
         "engine_arm": "sally_direct",
@@ -98,5 +114,89 @@ PERSONALITIES: dict[str, dict] = {
         "speaking_rate": 1.1,
         "backchannel_density": "low",
         "post_response_pause_multiplier": 0.85,
+        # Symbolic — Cartesia path doesn't read tts_models; included
+        # for shape uniformity so callers can iterate PERSONALITIES
+        # without per-arm branching on "does this key exist".
+        "tts_models": {"fast": "cartesia_sonic_2"},
+        "allowed_audio_tags": [],
+        "disfluency_density": 0.0,
+        "tag_director": False,
+    },
+    # 4th arm added 2026-04-26 (V3_IMPLEMENTATION.md). Held intentionally
+    # parallel to sally_warm — same voice (Jessica), same engine arm
+    # (sally_empathy_plus), same speaking_rate, same pause multiplier.
+    # The ONLY experimental variable is "Flash flat" vs "v3 + expression
+    # layer." Any other change here invalidates the A/B comparison.
+    #
+    # Tier routing (Phase F): the runner picks `fast` for greetings,
+    # fast-path matches, undecorated turns, and all backchannels.
+    # Picks `emotive` only when the expression layer inserted at least
+    # one audio tag — that's the only case where v3's higher latency
+    # earns its cost.
+    "sally_emotive": {
+        "engine_arm": "sally_empathy_plus",
+        "tts_provider": "elevenlabs",
+        "tts_voice_id": "cgSgspJ2msm6clMCkdW9",  # Jessica — same as warm
+        "tts_models": {
+            "fast": "eleven_flash_v2_5",
+            "emotive": "eleven_v3",
+        },
+        # speaking_rate honored on Flash tier; v3 ignores it.
+        "speaking_rate": 0.90,
+        # Backchannels always Flash (Phase F gates this), so density
+        # mirrors warm.
+        "backchannel_density": "high",
+        "post_response_pause_multiplier": 1.2,
+        # Expanded 2026-04-26 (V3_TAG_DIRECTOR.md §2). Sales-relevant
+        # subset of v3's tag taxonomy. Three categories:
+        #
+        #   Reactions      — pre-speech physical sounds (precede the clause)
+        #   Emotional state — govern delivery of next 4-5 words
+        #   Delivery direction — modify HOW words are spoken
+        #
+        # Audition-confirmed working: [laughs] [sighs] [exhales]. Others
+        # remain on this list speculatively — Haiku director will pick
+        # them, the user prunes any that read literally during smoke
+        # testing. Reduce this list (no code change needed) — the
+        # director's whitelist enforcement automatically stops emitting
+        # rejected tags.
+        "allowed_audio_tags": [
+            # Reactions (pre-speech)
+            "[laughs]",
+            "[laughs harder]",
+            "[sighs]",
+            "[exhales]",
+            "[clears throat]",
+            "[breathes in]",
+            "[sniff]",
+            "[pauses]",
+            # Emotional state (govern next 4-5 words)
+            "[serious]",
+            "[reassuring]",
+            "[thoughtful]",
+            "[concerned]",
+            "[hopeful]",
+            "[surprised]",
+            "[excited]",
+            "[empathetic]",
+            "[curious]",
+            "[warmly]",
+            # Delivery direction (modify HOW)
+            "[softly]",
+            "[slowly]",
+            "[quickly]",
+            "[emphasizing]",
+            "[deliberately]",
+            "[whispers]",
+        ],
+        # Slightly higher than warm (0.0) to give v3 something to chew
+        # on even when no tag landed in a phase pool. Inline "yeah,",
+        # "you know," prefixes change Flash audio character too.
+        "disfluency_density": 0.45,
+        # Use Haiku 4.5 to choose tags + placement contextually instead
+        # of the rules-based expression.decorate() path. The rules path
+        # remains as the fallback when Haiku times out, errors, or
+        # returns invalid output. See tag_director.py.
+        "tag_director": True,
     },
 }

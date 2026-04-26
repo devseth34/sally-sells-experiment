@@ -134,6 +134,17 @@ class TurnMetrics:
     utterance_duration_ms: Optional[float] = None
     engine_dispatch_ms: Optional[float] = None
     user_latency_ms: Optional[float] = None
+    # Phase G fields (2026-04-26): emotive arm observability.
+    # All default to None / False so legacy rows still load cleanly.
+    tts_tier: Optional[str] = None              # "fast" | "emotive"
+    audio_tags_used: Optional[list] = None      # tags expression.decorate inserted, [] if ran but no tags
+    user_emotion: Optional[str] = None          # L1 emotional_tone for this turn
+    expression_decorated: bool = False          # True iff expression layer ran
+    # Tag director fields (2026-04-26 V3_TAG_DIRECTOR): Haiku call observability.
+    # None on rows from the rules-only era; populated going forward for sally_emotive turns.
+    tag_director_used: bool = False             # True iff Haiku director succeeded for this turn
+    tag_director_latency_ms: Optional[float] = None  # Haiku call latency (None if not attempted)
+    tag_director_fallback: Optional[str] = None  # "timeout" | "parse_error" | "invalid_tags: ..." | etc.
     timestamp: float = field(default_factory=time.time)
 
 

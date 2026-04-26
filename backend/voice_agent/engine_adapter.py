@@ -34,6 +34,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -120,6 +121,19 @@ class SallyEngineAdapter:
         # from the adapter's private fields.
         self._last_turn_stats: dict = {}
 
+        # Per-turn user emotion (for sally_emotive expression layer).
+        # Extracted from the engine's thought_log_json — Layer 1's
+        # ComprehensionOutput is serialized into that JSON string under
+        # `comprehension.emotional_tone`. We parse it post-engine and
+        # cache here so the runner can pass it to expression.decorate()
+        # without doing its own JSON parsing.
+        #
+        # `emotional_tone` is the field from app/models.py:ComprehensionOutput
+        # — a free-form string like "engaged, frustrated, defensive".
+        # Substring matching in expression.py routes it to the right tag
+        # pool (frustrated → [sighs]/[empathetic], etc.).
+        self._last_user_emotion: Optional[str] = None
+
     @property
     def personality(self) -> str:
         return self._personality
@@ -147,6 +161,17 @@ class SallyEngineAdapter:
     @property
     def last_turn_stats(self) -> dict:
         return dict(self._last_turn_stats)
+
+    @property
+    def last_user_emotion(self) -> Optional[str]:
+        """Emotional tone L1 detected on the most recent user turn.
+
+        None if no turn has run yet, or if `thought_log_json` was
+        missing/malformed/lacked an emotional_tone field. The expression
+        layer treats None as "use phase pool only" — graceful degradation,
+        not an error.
+        """
+        return self._last_user_emotion
 
     def opener(self) -> str:
         """Return the fixed greeting Sally uses to open a chat.
@@ -221,12 +246,22 @@ class SallyEngineAdapter:
         self._history.append({"role": "assistant", "content": response_text})
         self._ended = ended
 
+        # Extract user emotional tone from the engine's thought log.
+        # Layer 1 (comprehension) writes `emotional_tone` into the
+        # ComprehensionOutput, which the engine serializes into the
+        # `thought_log_json` field of its result dict. Parse defensively:
+        # if the JSON is missing, malformed, or lacks the emotion key,
+        # fall back to None and log a warning (don't raise — voice calls
+        # must keep flowing even if a single turn's metadata is bad).
+        self._last_user_emotion = _parse_user_emotion(result.get("thought_log_json"))
+
         self._last_turn_stats = {
             "turn": self._turn_number,
             "engine_ms": engine_ms,
             "phase": self._phase.value,
             "phase_changed": bool(result.get("phase_changed", False)),
             "ended": ended,
+            "user_emotion": self._last_user_emotion,
         }
 
         logger.info(
@@ -256,3 +291,44 @@ class SallyEngineAdapter:
             "ended": self._ended,
             "profile": json.loads(self._profile_json) if self._profile_json else {},
         }
+
+
+def _parse_user_emotion(thought_log_json: object) -> Optional[str]:
+    """Pull `emotional_tone` from the engine's thought_log JSON string.
+
+    The engine puts ComprehensionOutput at `thought_log["comprehension"]`
+    when Layer 1 ran successfully. Field of interest:
+      thought_log_json -> "comprehension" -> "emotional_tone"
+    On the fast-path or fallback path, comprehension may be absent or
+    have a different shape; we tolerate every variation by defaulting
+    to None and logging at debug level (not warning — these aren't
+    error conditions).
+
+    Returns the raw string from L1 (e.g. "engaged, frustrated,
+    defensive"). The expression layer does its own substring matching
+    against EMOTION_TAG_OVERRIDES keys; we don't normalize here.
+    """
+    if not thought_log_json or not isinstance(thought_log_json, str):
+        return None
+    try:
+        parsed = json.loads(thought_log_json)
+    except (ValueError, TypeError):
+        logger.debug("thought_log_json failed to parse; emotion → None")
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    # The exact path depends on the engine's serialization. Try
+    # common shapes in order of likelihood, return the first hit.
+    comp = parsed.get("comprehension")
+    if isinstance(comp, dict):
+        tone = comp.get("emotional_tone")
+        if isinstance(tone, str) and tone.strip():
+            return tone.strip()
+
+    # Some engine paths flatten: emotional_tone at the top level.
+    tone = parsed.get("emotional_tone")
+    if isinstance(tone, str) and tone.strip():
+        return tone.strip()
+
+    return None

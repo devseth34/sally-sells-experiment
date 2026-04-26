@@ -43,11 +43,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Literal, Optional
 
 from livekit import rtc
 from livekit.agents import tts as lk_tts
 
+from backend.voice_agent import expression, tag_director
 from backend.voice_agent.backchannel import (
     pick_backchannel,
     should_fire_mid_engine,
@@ -58,11 +60,30 @@ from backend.voice_agent.metrics import (
     TurnMetrics,
     consume_turn_l1_model,
 )
+from backend.voice_agent.live_reasoning import LiveReasoningPublisher
+from backend.voice_agent.persistence import SessionRecorder
 from backend.voice_agent.personalities import PERSONALITIES
 from backend.voice_agent.pronunciation import preprocess
 
 logger = logging.getLogger("sally-voice-runner")
 
+
+@dataclass
+class DirectorMetadata:
+    """Per-turn record of whether the Haiku tag director ran and outcome.
+
+    Threaded through `_apply_expression` → `_emit_metrics` → JSONL so
+    we can compute director used-rate, fallback rate, and latency
+    distribution per arm in cds_rollup.
+    """
+    used: bool                         # True iff director call succeeded
+    latency_ms: float                  # 0.0 if director not attempted
+    fallback_reason: Optional[str]     # populated when director failed
+
+    @classmethod
+    def empty(cls) -> "DirectorMetadata":
+        """For arms that never invoke the director (existing 3 arms)."""
+        return cls(used=False, latency_ms=0.0, fallback_reason=None)
 
 def _safe_ms_between(earlier: float | None, later: float | None) -> float | None:
     """Clamp-to-zero ms delta between two monotonic() timestamps.
@@ -113,10 +134,13 @@ class SallyVoiceRunner:
         *,
         personality: str,
         tts: lk_tts.TTS,
+        tts_emotive: Optional[lk_tts.TTS] = None,  # kept for API compat, unused
         audio_source: rtc.AudioSource,
         on_session_end: Callable[[], Awaitable[None]] | None = None,
         metrics_sink: MetricsSink | None = None,
         call_id: str = "",
+        recorder: Optional[SessionRecorder] = None,
+        publisher: Optional[LiveReasoningPublisher] = None,
     ) -> None:
         if personality not in PERSONALITIES:
             raise ValueError(f"Unknown personality {personality!r}")
@@ -126,7 +150,14 @@ class SallyVoiceRunner:
             _BASE_POST_RESPONSE_PAUSE_S
             * float(PERSONALITIES[personality]["post_response_pause_multiplier"])
         )
-        self._tts = tts
+        # _tts_fast: livekit Flash plugin — used for greeting, backchannels,
+        # and non-decorated turns. Low latency (~75ms first-frame).
+        # _tts_emotive: our direct HTTP adapter (elevenlabs_v3_tts.py) using
+        # eleven_flash_v2_5. The livekit plugin's streaming path does NOT
+        # render audio tags like [chuckles]/[sighs] — it reads them as
+        # literal text. The direct HTTP REST endpoint does render them.
+        self._tts_fast = tts
+        self._tts_emotive = tts_emotive  # None for non-emotive personalities
         self._audio_source = audio_source
         self._adapter = SallyEngineAdapter(personality)
         self._turn_lock = asyncio.Lock()
@@ -141,6 +172,8 @@ class SallyVoiceRunner:
         self._on_session_end = on_session_end
         self._metrics_sink = metrics_sink
         self._call_id = call_id
+        self._recorder: Optional[SessionRecorder] = recorder
+        self._publisher: Optional[LiveReasoningPublisher] = publisher
         self._turn_index = 0
         # Backchannel state — lives across the whole call, not per turn.
         # `_recently_used_backchannels` caps at the last 2 entries so
@@ -148,6 +181,12 @@ class SallyVoiceRunner:
         # enforces MIN_INTERVAL_SEC gating across turns.
         self._recently_used_backchannels: list[str] = []
         self._last_backchannel_at: float = 0.0
+        # Tag director scratch — written by `_try_tag_director` on
+        # success, read by `_apply_expression`. Per-turn; safe because
+        # turn_lock serializes. Avoids returning a 6-tuple from the
+        # helper to the caller.
+        self._last_director_text: str = ""
+        self._last_director_tags: list[str] = []
 
     @property
     def personality(self) -> str:
@@ -226,6 +265,17 @@ class SallyVoiceRunner:
                 name=f"backchannel-turn-{self._turn_index + 1}",
             )
             try:
+                # Optional progress hint to the live UI. Best-effort —
+                # if it fails to schedule, the live panel just doesn't
+                # show a "thinking…" indicator for this turn.
+                if self._publisher is not None:
+                    try:
+                        asyncio.create_task(
+                            self._publisher.publish_progress("engine", "Sally is thinking…"),
+                            name="publish-progress-engine",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 engine_start_t = time.monotonic()
                 response_text, ended = await self._adapter.turn(transcript)
                 engine_ms = (time.monotonic() - engine_start_t) * 1000
@@ -240,7 +290,7 @@ class SallyVoiceRunner:
             except Exception:
                 logger.exception("Engine turn failed — using fallback phrase")
                 await self._cancel_backchannel(bc_task)
-                await self._speak(_ENGINE_FALLBACK)
+                await self._speak(_ENGINE_FALLBACK, tier="fast")
                 self._emit_metrics(
                     user_text=transcript,
                     sally_text=_ENGINE_FALLBACK,
@@ -260,8 +310,28 @@ class SallyVoiceRunner:
                 # next turn's audio window.
                 await self._cancel_backchannel(bc_task)
 
-            if response_text:
-                first_frame_ms, first_frame_t = await self._speak(response_text)
+            # Expression layer — runs only for sally_emotive. For all
+            # other arms, decorated_text == response_text and tier="fast"
+            # so the code path below is identical to pre-Phase-F behavior.
+            # Now async because the Haiku tag director (sally_emotive only)
+            # makes a network call. We're already inside the turn_lock
+            # critical section so awaiting here is safe.
+            decorated_text, tags_used, tts_tier, director_meta = (
+                await self._apply_expression(response_text)
+            )
+
+            if decorated_text:
+                if self._publisher is not None:
+                    try:
+                        asyncio.create_task(
+                            self._publisher.publish_progress("tts", "Sally is speaking…"),
+                            name="publish-progress-tts",
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                first_frame_ms, first_frame_t = await self._speak(
+                    decorated_text, tier=tts_tier
+                )
             # Pacing: post-response pause scales with personality.
             # sally_direct is terser + faster to re-engage; sally_warm
             # lingers. Do this BEFORE checking `ended` so a farewell
@@ -277,7 +347,7 @@ class SallyVoiceRunner:
 
             self._emit_metrics(
                 user_text=transcript,
-                sally_text=response_text,
+                sally_text=decorated_text,
                 asr_ms=asr_ms,
                 engine_ms=engine_ms,
                 tts_first_frame_ms=first_frame_ms,
@@ -286,11 +356,159 @@ class SallyVoiceRunner:
                 user_latency_ms=user_latency_ms,
                 ended=ended,
                 phase_stats=self._adapter.last_turn_stats,
+                tts_tier=tts_tier,
+                audio_tags_used=tags_used,
+                user_emotion=self._adapter.last_user_emotion,
+                expression_decorated=(self._personality == "sally_emotive"),
+                tag_director_used=director_meta.used,
+                # Latency only meaningful when director was attempted (used or
+                # fell back). 0.0 from DirectorMetadata.empty() means not attempted;
+                # surface as None in that case so JSONL stays clean.
+                tag_director_latency_ms=(
+                    director_meta.latency_ms
+                    if (director_meta.used or director_meta.fallback_reason is not None)
+                    else None
+                ),
+                tag_director_fallback=director_meta.fallback_reason,
             )
 
             if ended and self._on_session_end is not None:
                 logger.info("Session ended by engine — signaling teardown")
                 await self._on_session_end()
+
+    def _recent_history(self, n: int = 2) -> list[dict]:
+        """Last n full turns from the engine adapter as alternating
+        user/assistant dicts. Used by the tag director for context.
+
+        Returns at most 2*n dicts (one user + one assistant per turn).
+        Tolerates a missing or empty history attribute — director
+        prompt has a fallback for "(no prior turns)".
+        """
+        history = getattr(self._adapter, "_history", []) or []
+        if not history:
+            return []
+        # Each "turn" is two history entries (user + assistant), so we
+        # take the last 2*n entries to roughly cover n turns.
+        return list(history[-(2 * n):])
+
+    async def _apply_expression(
+        self, response_text: str
+    ) -> tuple[str, list, Literal["fast", "emotive"], DirectorMetadata]:
+        """Decide tags + decoration. Returns (text, tags, tier, director_meta).
+
+        Two gates:
+          1. If the personality has no allowed_audio_tags (existing 3
+             arms), short-circuit immediately with the raw response.
+             Zero director cost, zero rules-path cost.
+          2. If `tag_director: True`, try Haiku first. On any failure
+             (timeout, parse, invalid tag, drift, missing API key),
+             fall through to the rules-based expression.decorate().
+        """
+        cfg = PERSONALITIES.get(self._personality, {})
+        allowed_tags = cfg.get("allowed_audio_tags") or []
+
+        # Gate 1: existing 3 arms (empty whitelist) exit free.
+        if not allowed_tags:
+            return response_text, [], "fast", DirectorMetadata.empty()
+
+        # Gate 2: try Haiku director if personality opts in.
+        director_meta = DirectorMetadata.empty()
+        if cfg.get("tag_director", False):
+            director_meta = await self._try_tag_director(response_text, cfg, allowed_tags)
+            if director_meta.used:
+                # Director succeeded — use its output. The actual decorated
+                # text + tags are stashed on director_meta via the helper.
+                tier: Literal["fast", "emotive"] = (
+                    "emotive" if self._last_director_tags else "fast"
+                )
+                logger.info(
+                    "Tag director applied",
+                    extra={
+                        "tags": self._last_director_tags,
+                        "tier": tier,
+                        "latency_ms": round(director_meta.latency_ms),
+                        "phase": self._adapter.current_phase,
+                        "emotion": self._adapter.last_user_emotion,
+                    },
+                )
+                return (
+                    self._last_director_text,
+                    self._last_director_tags,
+                    tier,
+                    director_meta,
+                )
+            # Director failed — log once, fall through to rules.
+            logger.info(
+                "Tag director fell back to rules: %s", director_meta.fallback_reason
+            )
+
+        # Rules-based fallback (also used by any future personality with
+        # a whitelist but tag_director=False).
+        try:
+            decorated, tags, tier = expression.decorate(
+                response_text,
+                phase=self._adapter.current_phase,
+                user_emotion=self._adapter.last_user_emotion,
+                personality=self._personality,
+                allowed_tags=allowed_tags,
+                disfluency_density=float(cfg.get("disfluency_density", 0.0)),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("expression.decorate failed (non-fatal) — using raw response")
+            return response_text, [], "fast", director_meta
+
+        logger.info(
+            "Expression layer applied (rules path)",
+            extra={
+                "tags": tags,
+                "tier": tier,
+                "phase": self._adapter.current_phase,
+                "emotion": self._adapter.last_user_emotion,
+            },
+        )
+        return decorated, tags, tier, director_meta
+
+    async def _try_tag_director(
+        self,
+        response_text: str,
+        cfg: dict,
+        allowed_tags: list[str],
+    ) -> DirectorMetadata:
+        """Call the Haiku director. Returns DirectorMetadata describing
+        the outcome; if used=True, also stashes the decorated text and
+        tag list on `_last_director_text` / `_last_director_tags` for
+        the caller to read (avoids returning a 6-tuple from the
+        outer method)."""
+        # Defensive: any unexpected exception (anthropic SDK bugs, etc.)
+        # falls through to rules. The director itself returns
+        # success=False with a reason for normal failure modes.
+        try:
+            result = await tag_director.direct_tags(
+                response_text,
+                phase=self._adapter.current_phase,
+                user_emotion=self._adapter.last_user_emotion,
+                history=self._recent_history(n=2),
+                allowed_tags=allowed_tags,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("tag_director raised unexpectedly — falling back")
+            return DirectorMetadata(
+                used=False, latency_ms=0.0, fallback_reason=f"unexpected: {type(exc).__name__}"
+            )
+
+        if result.success:
+            self._last_director_text = result.decorated_text
+            self._last_director_tags = list(result.tags_used)
+            return DirectorMetadata(
+                used=True,
+                latency_ms=result.latency_ms,
+                fallback_reason=None,
+            )
+        return DirectorMetadata(
+            used=False,
+            latency_ms=result.latency_ms,
+            fallback_reason=result.fallback_reason,
+        )
 
     def _emit_metrics(
         self,
@@ -305,6 +523,13 @@ class SallyVoiceRunner:
         user_latency_ms: float | None,
         ended: bool,
         phase_stats: dict,
+        tts_tier: str = "fast",
+        audio_tags_used: Optional[list] = None,
+        user_emotion: Optional[str] = None,
+        expression_decorated: bool = False,
+        tag_director_used: bool = False,
+        tag_director_latency_ms: Optional[float] = None,
+        tag_director_fallback: Optional[str] = None,
     ) -> None:
         """One JSONL row per completed turn (or engine-failure fallback).
 
@@ -314,70 +539,110 @@ class SallyVoiceRunner:
         turns even when the sink is absent.
         """
         l1_model = consume_turn_l1_model()
-        if self._metrics_sink is None:
-            return
         self._turn_index += 1
-        try:
-            self._metrics_sink.emit(
-                TurnMetrics(
-                    call_id=self._call_id,
-                    turn_index=self._turn_index,
-                    personality=self._personality,
-                    arm=self._adapter.arm_key,
-                    phase=str(phase_stats.get("phase", "")),
-                    phase_changed=bool(phase_stats.get("phase_changed", False)),
-                    user_text=user_text,
-                    sally_text=sally_text,
-                    asr_ms=asr_ms,
-                    engine_ms=engine_ms,
-                    l1_model=l1_model,
-                    tts_first_frame_ms=tts_first_frame_ms,
-                    utterance_duration_ms=utterance_duration_ms,
-                    engine_dispatch_ms=engine_dispatch_ms,
-                    user_latency_ms=user_latency_ms,
-                    ended=ended,
+        metrics = TurnMetrics(
+            call_id=self._call_id,
+            turn_index=self._turn_index,
+            personality=self._personality,
+            arm=self._adapter.arm_key,
+            phase=str(phase_stats.get("phase", "")),
+            phase_changed=bool(phase_stats.get("phase_changed", False)),
+            user_text=user_text,
+            sally_text=sally_text,
+            asr_ms=asr_ms,
+            engine_ms=engine_ms,
+            l1_model=l1_model,
+            tts_first_frame_ms=tts_first_frame_ms,
+            utterance_duration_ms=utterance_duration_ms,
+            engine_dispatch_ms=engine_dispatch_ms,
+            user_latency_ms=user_latency_ms,
+            ended=ended,
+            tts_tier=tts_tier,
+            audio_tags_used=audio_tags_used,
+            user_emotion=user_emotion,
+            expression_decorated=expression_decorated,
+            tag_director_used=tag_director_used,
+            tag_director_latency_ms=tag_director_latency_ms,
+            tag_director_fallback=tag_director_fallback,
+        )
+        if self._metrics_sink is not None:
+            try:
+                self._metrics_sink.emit(metrics)
+            except Exception:  # noqa: BLE001
+                logger.exception("Metrics emit failed (non-fatal)")
+        if self._recorder is not None:
+            try:
+                from dataclasses import asdict
+                self._recorder.record_turn(asdict(metrics))
+            except Exception:  # noqa: BLE001
+                logger.exception("Recorder record_turn failed (non-fatal)")
+        if self._publisher is not None:
+            # Fire-and-forget — never await. Publisher failures must not
+            # block the runner; the DB write above is the safety net.
+            try:
+                from dataclasses import asdict
+                asyncio.create_task(
+                    self._publisher.publish_turn(asdict(metrics)),
+                    name=f"publish-turn-{self._turn_index}",
                 )
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("Metrics emit failed (non-fatal)")
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to schedule publisher.publish_turn (non-fatal)")
 
-    async def _speak(self, text: str) -> tuple[float | None, float | None]:
-        """Synthesize through the personality's TTS and publish.
+    async def _speak(
+        self,
+        text: str,
+        *,
+        tier: Literal["fast", "emotive"] = "fast",
+    ) -> tuple[float | None, float | None]:
+        """Synthesize and publish to the AudioSource.
 
-        Returns (first_frame_ms, first_frame_t) where:
-          first_frame_ms: TTS first-frame latency in ms, measured from
-              the _speak start (≈ engine-done). Kept for backward-compat
-              with the `tts_first_frame_ms` metric and log line.
-          first_frame_t: absolute monotonic() timestamp when the first
-              audio frame landed. Lets the caller compute
-              user_latency_ms = first_frame_t - speech_end_t cleanly
-              without re-deriving from deltas.
+        tier="emotive": uses the direct HTTP adapter (ElevenLabsV3TTS with
+        eleven_flash_v2_5) which renders audio tags as actual sounds.
+        tier="fast": uses the livekit Flash plugin — lower latency, but
+        reads [chuckles] etc. as literal text (different streaming path).
+        Backchannels and non-decorated turns always use tier="fast".
 
-        Both are None if the TTS failed before emitting a frame.
-        Swallows TTS failures — same rationale as parrot._speak: a
-        single bad synthesis must not tear down the call.
-
-        Acquires `_audio_lock` for the entire synthesis so concurrent
-        backchannel emission never overlaps with Sally's real response
-        on the shared AudioSource.
+        Falls back to fast tier if the emotive adapter is None or fails.
+        Returns (first_frame_ms, first_frame_t). Both None on failure.
+        Acquires audio_lock so backchannels never overlap with responses.
         """
         processed = preprocess(text, self._tts_provider)
         first_frame_ms: float | None = None
         first_frame_t: float | None = None
+
         async with self._audio_lock:
             t0 = time.monotonic()
+
+            if tier == "emotive" and self._tts_emotive is not None:
+                try:
+                    async for chunk in self._tts_emotive.synthesize(processed):
+                        if first_frame_ms is None:
+                            first_frame_t = time.monotonic()
+                            first_frame_ms = (first_frame_t - t0) * 1000
+                            logger.info(
+                                "TTS first-frame",
+                                extra={"first_frame_ms": round(first_frame_ms), "tier": "emotive", "text": processed[:80]},
+                            )
+                        await self._audio_source.capture_frame(chunk.frame)
+                    return first_frame_ms, first_frame_t
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Emotive TTS failed, falling back to fast: %s", exc)
+                    t0 = time.monotonic()
+
+            # Fast tier (livekit plugin) — greeting, backchannels, fallback.
             try:
-                async for chunk in self._tts.synthesize(processed):
+                async for chunk in self._tts_fast.synthesize(processed):
                     if first_frame_ms is None:
                         first_frame_t = time.monotonic()
                         first_frame_ms = (first_frame_t - t0) * 1000
                         logger.info(
                             "TTS first-frame",
-                            extra={"first_frame_ms": round(first_frame_ms), "text": processed[:80]},
+                            extra={"first_frame_ms": round(first_frame_ms), "tier": "fast", "text": processed[:80]},
                         )
                     await self._audio_source.capture_frame(chunk.frame)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("TTS failed for %r: %s", processed[:60], exc)
+
         return first_frame_ms, first_frame_t
 
     async def _fire_backchannel_during_engine(self) -> None:
@@ -432,7 +697,9 @@ class SallyVoiceRunner:
         # we're already cancelled by that point unless we started
         # emitting before cancellation.
         try:
-            await self._speak(phrase)
+            # Backchannels ALWAYS use the fast tier. Their job is masking
+            # latency; using v3 here would add latency instead of hiding it.
+            await self._speak(phrase, tier="fast")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001

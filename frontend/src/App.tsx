@@ -5,6 +5,10 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { HistoryPage } from "./pages/HistoryPage";
 import { BookingPage } from "./pages/BookingPage";
 import { AdminPage } from "./pages/AdminPage";
+import { VoicePage } from "./pages/voice/VoicePage";
+import { VoiceSessionsPage } from "./pages/voice/VoiceSessionsPage";
+import { VoiceSessionDetailPage } from "./pages/voice/VoiceSessionDetailPage";
+import { VoiceAnalyticsPage } from "./pages/voice/VoiceAnalyticsPage";
 
 export default function App() {
   return (
@@ -16,6 +20,10 @@ export default function App() {
         <Route path="/history" element={<HistoryPage />} />
         <Route path="/booking/:sessionId" element={<BookingPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/voice" element={<VoicePage />} />
+        <Route path="/voice/sessions" element={<VoiceSessionsPage />} />
+        <Route path="/voice/sessions/:id" element={<VoiceSessionDetailPage />} />
+        <Route path="/voice/analytics" element={<VoiceAnalyticsPage />} />
       </Routes>
     </BrowserRouter>
   );

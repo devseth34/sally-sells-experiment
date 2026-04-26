@@ -91,3 +91,140 @@ def test_every_lexicon_key_produces_its_mapped_value() -> None:
         out = preprocess(key, "cartesia")
         # Identity entries (P and L -> P and L) are trivially satisfied.
         assert out == expected, f"LEXICON[{key!r}] -> {out!r}, expected {expected!r}"
+
+
+# ── Audio-tag protection (Phase D) ────────────────────────────────────
+
+
+def test_audio_tag_protected_from_substitution() -> None:
+    """Tag content must reach TTS verbatim. AI inside `[curious about
+    the AI thing]` must NOT become A-I."""
+    assert (
+        preprocess("[curious about the AI thing]", "elevenlabs")
+        == "[curious about the AI thing]"
+    )
+
+
+def test_audio_tag_outside_substitution_still_works() -> None:
+    """LEXICON substitution still applies OUTSIDE tags — the protection
+    is scoped, not blanket."""
+    result = preprocess("Yeah, AI is hard. [chuckles]", "elevenlabs")
+    assert "A-I" in result, f"AI outside tag should be substituted: {result!r}"
+    assert "[chuckles]" in result, f"tag should survive verbatim: {result!r}"
+
+
+def test_multiple_tags_protected() -> None:
+    text = "[chuckles] AI is great. [sighs] NEPQ helps."
+    result = preprocess(text, "elevenlabs")
+    assert "[chuckles]" in result
+    assert "[sighs]" in result
+    assert "A-I" in result
+    assert "N-E-P-Q" in result
+
+
+def test_lexicon_inside_tag_preserved() -> None:
+    """Multi-word LEXICON keys (Nik Shah) must not leak into tag content
+    even though the tag itself contains the substring."""
+    text = "[hesitant about the Nik Shah opportunity]"
+    assert preprocess(text, "elevenlabs") == text
+
+
+def test_tag_with_brackets_only() -> None:
+    # Common short tags. No internal LEXICON keys here.
+    assert preprocess("[chuckles]", "elevenlabs") == "[chuckles]"
+    assert preprocess("[empathetic]", "elevenlabs") == "[empathetic]"
+    assert preprocess("[warm chuckle]", "elevenlabs") == "[warm chuckle]"
+
+
+def test_tag_protection_does_not_leak_sentinel() -> None:
+    """The NUL-byte sentinel used internally must never appear in the
+    final output. If restoration is broken, the sentinel leaks."""
+    out = preprocess("[chuckles] talking about NEPQ", "elevenlabs")
+    assert "\x00" not in out, f"sentinel leaked into output: {out!r}"
+    assert "TAG" not in out or "[" in out  # only the original tag should contain "TAG"
+
+
+def test_tag_protection_idempotent() -> None:
+    """Decorated text should remain stable across multiple preprocess
+    calls — a common scenario if the runner accidentally re-preprocesses
+    or a test runs the function twice."""
+    once = preprocess("[chuckles] AI is hard", "elevenlabs")
+    twice = preprocess(once, "elevenlabs")
+    assert once == twice
+
+
+# ── Phase D: SSML break / ellipsis / em-dash protection ──────────────
+
+
+def test_ssml_break_half_second_preserved() -> None:
+    text = 'Let me ask you something <break time="0.5s"/>'
+    out = preprocess(text, "elevenlabs")
+    assert '<break time="0.5s"/>' in out
+
+
+def test_ssml_break_one_second_preserved() -> None:
+    text = 'Take a moment <break time="1.0s"/> and consider this.'
+    out = preprocess(text, "elevenlabs")
+    assert '<break time="1.0s"/>' in out
+
+
+def test_ellipsis_preserved() -> None:
+    text = "I hear you... that sounds tough."
+    out = preprocess(text, "elevenlabs")
+    assert "..." in out
+
+
+def test_em_dash_preserved() -> None:
+    text = "I hear you — that sounds really tough."
+    out = preprocess(text, "elevenlabs")
+    assert "—" in out
+
+
+def test_lexicon_applies_adjacent_to_break() -> None:
+    """A <break/> next to a LEXICON key should NOT prevent substitution
+    of the key. 'Nik Shah' → 'Nick Shah' must still happen."""
+    text = 'Hi Nik Shah <break time="0.5s"/> let me ask about NEPQ.'
+    out = preprocess(text, "elevenlabs")
+    assert "Nick Shah" in out
+    assert "N-E-P-Q" in out
+    assert '<break time="0.5s"/>' in out
+
+
+def test_em_dash_does_not_block_lexicon_on_either_side() -> None:
+    """Em-dash adjacency: 'Nik Shah—NEPQ stuff' should still get both
+    LEXICON substitutions (em-dash counts as non-word boundary)."""
+    text = "Nik Shah—NEPQ is the framework"
+    out = preprocess(text, "elevenlabs")
+    assert "Nick Shah" in out
+    assert "N-E-P-Q" in out
+    assert "—" in out
+
+
+def test_caps_word_passes_through() -> None:
+    """CAPS for emphasis is licensed by the director prompt. Lexicon
+    substitution is case-insensitive but only on whole-word matches —
+    an emphasized 'REALLY' should stay capitalized; AI inside the same
+    sentence should still substitute."""
+    text = "That's REALLY important AI work"
+    out = preprocess(text, "elevenlabs")
+    assert "REALLY" in out
+    assert "A-I" in out
+
+
+def test_multiple_decoration_types_preserved_together() -> None:
+    """Mix of audio tag + break + ellipsis in one response — all four
+    should survive together, with LEXICON applying to non-protected text."""
+    text = '[sighs] I hear you... <break time="0.5s"/> NEPQ helps with this — really.'
+    out = preprocess(text, "elevenlabs")
+    assert "[sighs]" in out
+    assert "..." in out
+    assert '<break time="0.5s"/>' in out
+    assert "—" in out
+    assert "N-E-P-Q" in out
+
+
+def test_protect_re_no_sentinel_leak() -> None:
+    """All four decoration types together — sentinel must never leak."""
+    text = '[sighs] yes... <break time="1.0s"/> tell me more — please.'
+    out = preprocess(text, "elevenlabs")
+    assert "\x00" not in out

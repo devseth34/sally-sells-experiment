@@ -78,8 +78,43 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+# Audio-tag protection (added 2026-04-26 for sally_emotive).
+#
+# When the expression layer decorates a response with audio tags like
+# "[curious about the AI thing]", the LEXICON pass below would match
+# "AI" inside the tag bracket and substitute it to "A-I", producing
+# "[curious about the A-I thing]" — which v3 doesn't recognize as a
+# valid tag and would speak literally. Same risk for any LEXICON key
+# that happens to appear inside a tag (Nik Shah, NEPQ, etc.).
+#
+# Fix: stash `[...]` spans behind NUL-byte sentinels before the LEXICON
+# pass, then restore them verbatim afterward. NUL bytes never appear
+# in legitimate engine output OR in any LEXICON key, so there's no
+# collision risk.
+#
+# 2026-04-26 (V3_TAG_DIRECTOR §7): widen the protection to also cover
+# `<break time="..."/>` SSML, ellipses (`...` or longer runs of dots),
+# and em-dashes (U+2014 `—`). The Haiku tag director is licensed by its
+# system prompt to insert these for delivery shaping, and they must
+# reach v3 verbatim. None of them collide with LEXICON keys, but the
+# em-dash specifically can confuse the word-boundary regex around
+# adjacent words ("Nik Shah—let me ask" must still substitute "Shah").
+_PROTECT_RE = re.compile(
+    r"\[[^\]]+\]"                       # audio tags
+    r"|<break\s+time=\"[^\"]+\"\s*/>"   # SSML break self-closing
+    r"|\.{3,}"                          # ellipses (3+ dots)
+    r"|—"                               # em-dash (U+2014)
+)
+
+
 def preprocess(text: str, tts_provider: str) -> str:
     """Return `text` with pronunciation substitutions applied.
+
+    Decoration tokens (audio tags, `<break>` SSML, ellipses, em-dashes)
+    are protected from LEXICON substitution — their content is opaque
+    to the pronunciation layer and must reach the TTS verbatim. Tags
+    are critical for v3 to interpret them as sounds; the rest are
+    delivery-shaping signals from the tag director.
 
     `tts_provider` is accepted for forward-compatibility with per-
     provider phoneme tag wrapping (see module docstring); today it is
@@ -87,6 +122,23 @@ def preprocess(text: str, tts_provider: str) -> str:
     sufficient on both sonic-2 and Flash v2.5.
     """
     del tts_provider  # advisory only — see module docstring
+
+    # Stash decoration spans. NUL-byte sentinels can't collide with any
+    # legitimate text or LEXICON key.
+    stashed: list[str] = []
+
+    def _stash(m: "re.Match[str]") -> str:
+        stashed.append(m.group(0))
+        return f"\x00TAG{len(stashed) - 1}\x00"
+
+    text = _PROTECT_RE.sub(_stash, text)
+
+    # Run LEXICON substitutions on the protected text.
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
+
+    # Restore stashed spans verbatim.
+    for i, span in enumerate(stashed):
+        text = text.replace(f"\x00TAG{i}\x00", span)
+
     return text

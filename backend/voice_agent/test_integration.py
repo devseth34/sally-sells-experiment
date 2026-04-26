@@ -270,3 +270,396 @@ async def test_slow_engine_fires_backchannel_and_records_metrics(tmp_path, monke
     assert row["engine_ms"] is not None
     # Engine took at least 500ms (the backchannel delay plus padding).
     assert row["engine_ms"] >= 500.0
+
+
+# ── Phase C: Tag director integration tests ──────────────────────────
+
+
+def _make_director_response(decorated_text: str, tags_used: list) -> Any:
+    """Build a fake Anthropic Messages response containing a JSON director payload."""
+    block = MagicMock()
+    block.text = json.dumps(
+        {"decorated_text": decorated_text, "tags_used": tags_used, "reasoning": "test"}
+    )
+    response = MagicMock()
+    response.content = [block]
+    return response
+
+
+def _patch_director_client(monkeypatch, *, side_effect=None, return_value=None):
+    """Stub tag_director._client with a mocked AsyncAnthropic. Returns
+    the AsyncMock for `messages.create` so tests can assert call counts."""
+    from unittest.mock import AsyncMock
+    from backend.voice_agent import tag_director
+
+    create_mock = AsyncMock(side_effect=side_effect, return_value=return_value)
+    fake_client = MagicMock()
+    fake_client.messages.create = create_mock
+    monkeypatch.setattr(tag_director, "_client", fake_client)
+    return create_mock
+
+
+@pytest.mark.asyncio
+async def test_director_succeeds_writes_metrics(tmp_path, monkeypatch) -> None:
+    """sally_emotive turn where Haiku returns a valid decoration.
+    Metrics row should record director_used=True with populated latency."""
+    from app.agent import SallyEngine
+
+    long_response = (
+        "Yeah, I hear you. That sounds really tough to deal with day after day. "
+        "Walk me through what happened the most recent time."
+    )
+    decorated = "[sighs] " + long_response
+    monkeypatch.setattr(
+        SallyEngine,
+        "process_turn",
+        staticmethod(lambda **kw: _fake_process_turn_result(response_text=long_response)),
+    )
+
+    create_mock = _patch_director_client(
+        monkeypatch, return_value=_make_director_response(decorated, ["[sighs]"])
+    )
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    tts = _FakeTTS()
+    audio = _FakeAudioSource()
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=tts,  # type: ignore[arg-type]
+        audio_source=audio,  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_director_succeeds",
+    )
+
+    await runner.on_user_turn("I'm so stuck", asr_ms=300.0)
+
+    create_mock.assert_awaited_once()
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tag_director_used"] is True
+    assert row["tag_director_fallback"] is None
+    assert row["tag_director_latency_ms"] is not None
+    assert row["tag_director_latency_ms"] >= 0.0
+    assert row["audio_tags_used"] == ["[sighs]"]
+    assert row["sally_text"] == decorated
+    assert row["tts_tier"] == "emotive"
+
+
+@pytest.mark.asyncio
+async def test_director_timeout_falls_back_to_rules(tmp_path, monkeypatch) -> None:
+    """When Haiku times out, the runner falls through to expression.decorate.
+    Metrics record director_used=False with fallback_reason='timeout'."""
+    from app.agent import SallyEngine
+    from backend.voice_agent import tag_director
+
+    long_response = (
+        "I hear you, that sounds really tough. Walk me through what happened."
+    )
+    monkeypatch.setattr(
+        SallyEngine,
+        "process_turn",
+        staticmethod(lambda **kw: _fake_process_turn_result(response_text=long_response)),
+    )
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(10.0)
+
+    _patch_director_client(monkeypatch, side_effect=hang)
+    # Tighten the director timeout for this test so we don't actually wait
+    # the full 0.4s default; 50ms is plenty to exercise the timeout path.
+    monkeypatch.setattr(tag_director, "_DEFAULT_TIMEOUT_S", 0.05)
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    tts = _FakeTTS()
+    audio = _FakeAudioSource()
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=tts,  # type: ignore[arg-type]
+        audio_source=audio,  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_director_timeout",
+    )
+
+    await runner.on_user_turn("anything", asr_ms=100.0)
+
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tag_director_used"] is False
+    assert row["tag_director_fallback"] == "timeout"
+    # Latency was tracked even though director failed.
+    assert row["tag_director_latency_ms"] is not None
+    # Rules path may or may not have inserted a tag depending on context
+    # signals — either is fine. Just confirm the turn completed and we
+    # didn't crash.
+
+
+@pytest.mark.asyncio
+async def test_director_short_circuits_on_trivial_text(tmp_path, monkeypatch) -> None:
+    """Engine returns < 30-char response → director short-circuits, no API call.
+    Metrics record director_used=False, tag_director_latency_ms=None
+    (not attempted, not failed)."""
+    from app.agent import SallyEngine
+
+    short_response = "Got it."
+    monkeypatch.setattr(
+        SallyEngine,
+        "process_turn",
+        staticmethod(lambda **kw: _fake_process_turn_result(response_text=short_response)),
+    )
+
+    create_mock = _patch_director_client(monkeypatch, return_value=_make_director_response("", []))
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=_FakeTTS(),  # type: ignore[arg-type]
+        audio_source=_FakeAudioSource(),  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_director_short",
+    )
+
+    await runner.on_user_turn("hi", asr_ms=80.0)
+
+    # tag_director.direct_tags() short-circuits before any API call.
+    create_mock.assert_not_awaited()
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    row = rows[0]
+    # Short-circuit returns success=True with the original text and no tags.
+    # The runner sees director_meta.used=True (success path) but with empty
+    # tags → tier=fast. We accept either treatment so long as the API
+    # wasn't called.
+    assert row["tts_tier"] == "fast"
+    assert row["audio_tags_used"] == []
+
+
+@pytest.mark.asyncio
+async def test_existing_arm_never_calls_director(tmp_path, monkeypatch) -> None:
+    """sally_warm has empty allowed_audio_tags AND tag_director=False.
+    Director must never be called — this is the core regression guard
+    for the existing 3 arms."""
+    from app.agent import SallyEngine
+
+    monkeypatch.setattr(
+        SallyEngine, "process_turn", staticmethod(lambda **kw: _fake_process_turn_result())
+    )
+    create_mock = _patch_director_client(
+        monkeypatch, return_value=_make_director_response("decorated", ["[sighs]"])
+    )
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    runner = SallyVoiceRunner(
+        personality="sally_warm",
+        tts=_FakeTTS(),  # type: ignore[arg-type]
+        audio_source=_FakeAudioSource(),  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_warm_no_director",
+    )
+
+    await runner.on_user_turn("anything", asr_ms=200.0)
+
+    create_mock.assert_not_awaited()
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    row = rows[0]
+    assert row["tag_director_used"] is False
+    assert row["tag_director_fallback"] is None
+    assert row["tag_director_latency_ms"] is None
+    assert row["audio_tags_used"] == []
+    assert row["tts_tier"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_director_invalid_tag_falls_back(tmp_path, monkeypatch) -> None:
+    """Haiku hallucinates a tag not in allowed_audio_tags → director rejects,
+    runner falls through to rules-based path. Metrics show fallback reason
+    starting with 'invalid_tags'."""
+    from app.agent import SallyEngine
+
+    long_response = (
+        "I hear you, that sounds really tough to deal with. Walk me through it."
+    )
+    monkeypatch.setattr(
+        SallyEngine,
+        "process_turn",
+        staticmethod(lambda **kw: _fake_process_turn_result(response_text=long_response)),
+    )
+    # `[chuckles]` is not in sally_emotive's allowed_audio_tags after Phase B's expansion.
+    _patch_director_client(
+        monkeypatch,
+        return_value=_make_director_response("[chuckles] " + long_response, ["[chuckles]"]),
+    )
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=_FakeTTS(),  # type: ignore[arg-type]
+        audio_source=_FakeAudioSource(),  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_director_invalid",
+    )
+
+    await runner.on_user_turn("ugh", asr_ms=200.0)
+
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    row = rows[0]
+    assert row["tag_director_used"] is False
+    assert row["tag_director_fallback"] is not None
+    assert row["tag_director_fallback"].startswith("invalid_tags")
+
+
+@pytest.mark.asyncio
+async def test_director_history_passed_through(tmp_path, monkeypatch) -> None:
+    """Verify the runner passes the engine adapter's recent history to
+    the director's user-message context block. Captures the user_msg
+    argument via a side_effect on the mock."""
+    from app.agent import SallyEngine
+
+    long_response = (
+        "I hear you, that sounds really tough. Walk me through what happened."
+    )
+    monkeypatch.setattr(
+        SallyEngine,
+        "process_turn",
+        staticmethod(lambda **kw: _fake_process_turn_result(response_text=long_response)),
+    )
+
+    captured_messages: list[Any] = []
+
+    async def capture(*_args, **kwargs):
+        captured_messages.append(kwargs.get("messages"))
+        block = MagicMock()
+        block.text = json.dumps(
+            {"decorated_text": long_response, "tags_used": [], "reasoning": "no decoration"}
+        )
+        response = MagicMock()
+        response.content = [block]
+        return response
+
+    _patch_director_client(monkeypatch, side_effect=capture)
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=_FakeTTS(),  # type: ignore[arg-type]
+        audio_source=_FakeAudioSource(),  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_director_history",
+    )
+
+    # Two turns so the second turn has prior history to pass.
+    await runner.on_user_turn("first user message", asr_ms=200.0)
+    await runner.on_user_turn("second user message about being stuck", asr_ms=200.0)
+
+    # Both turns called the director.
+    assert len(captured_messages) == 2
+
+    # Second call's user_msg should mention the first user message in history.
+    second_user_msg = captured_messages[1][0]["content"]
+    assert "first user message" in second_user_msg
+    assert "Recent conversation:" in second_user_msg
+
+
+# ── Phase E: Full-stack happy-path with director + pronunciation + v3 ──
+
+
+@pytest.mark.asyncio
+async def test_full_stack_director_emotive_happy_path(tmp_path, monkeypatch) -> None:
+    """End-to-end emotive turn:
+      - sally_emotive personality with full 24-tag whitelist (from Phase B)
+      - Engine returns a 3-sentence empathic response
+      - L1 emotion=frustrated (from thought_log)
+      - Phase=PROBLEM_AWARENESS
+      - Mocked Haiku returns 3 tags ([sighs], [empathetic], [curious])
+      - Pronunciation preserves ALL 3 tags through LEXICON pass
+      - _FakeTTS receives the full decorated text with tags intact
+      - Metrics row has tag_director_used=True with all expected fields populated
+    """
+    from app.agent import SallyEngine
+
+    response_text = (
+        "Yeah, I hear you on the workflow pain. "
+        "That sounds really tough to deal with day after day on top of the AI integration work. "
+        "Walk me through what happened the most recent time at NEPQ scale."
+    )
+    decorated = (
+        "[sighs] Yeah, I hear you on the workflow pain. "
+        "[empathetic] That sounds really tough to deal with day after day on top of the AI integration work. "
+        "[curious] Walk me through what happened the most recent time at NEPQ scale."
+    )
+
+    # Engine result includes thought_log_json so the adapter extracts
+    # emotional_tone="frustrated, defeated" and the runner threads it
+    # into the director's user message.
+    thought_log = json.dumps({"comprehension": {"emotional_tone": "frustrated, defeated"}})
+
+    def fake_engine(**kw: Any) -> dict:
+        return _fake_process_turn_result(
+            response_text=response_text,
+            new_phase="PROBLEM_AWARENESS",
+            phase_changed=True,
+            thought_log_json=thought_log,
+        )
+
+    monkeypatch.setattr(SallyEngine, "process_turn", staticmethod(fake_engine))
+
+    # Capture the actual text passed to TTS so we can assert all 3 tags
+    # survived pronunciation preprocessing.
+    create_mock = _patch_director_client(
+        monkeypatch,
+        return_value=_make_director_response(decorated, ["[sighs]", "[empathetic]", "[curious]"]),
+    )
+
+    sink_path = tmp_path / "turns.jsonl"
+    sink = MetricsSink(sink_path)
+    tts = _FakeTTS()
+    audio = _FakeAudioSource()
+    runner = SallyVoiceRunner(
+        personality="sally_emotive",
+        tts=tts,  # type: ignore[arg-type]
+        audio_source=audio,  # type: ignore[arg-type]
+        metrics_sink=sink,
+        call_id="job_phase_e_full_stack",
+    )
+
+    await runner.on_user_turn(
+        "I've been struggling with this AI workflow for months and honestly I'm exhausted",
+        asr_ms=420.0,
+    )
+
+    # 1. Director was called exactly once.
+    create_mock.assert_awaited_once()
+
+    # 2. TTS received the decorated text — verify all 3 tags survived
+    #    pronunciation preprocessing AND the LEXICON pass (AI → A-I,
+    #    NEPQ → N-E-P-Q applied OUTSIDE the tags).
+    tts_input = tts.calls[0]
+    assert "[sighs]" in tts_input
+    assert "[empathetic]" in tts_input
+    assert "[curious]" in tts_input
+    assert "A-I" in tts_input
+    assert "N-E-P-Q" in tts_input
+
+    # 3. Metrics row has all director fields populated correctly.
+    rows = [json.loads(l) for l in sink_path.read_text().strip().split("\n")]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["personality"] == "sally_emotive"
+    assert row["arm"] == "sally_empathy_plus"
+    assert row["phase"] == "PROBLEM_AWARENESS"
+    assert row["phase_changed"] is True
+    assert row["tag_director_used"] is True
+    assert row["tag_director_fallback"] is None
+    assert row["tag_director_latency_ms"] is not None
+    assert row["tag_director_latency_ms"] >= 0.0
+    assert row["audio_tags_used"] == ["[sighs]", "[empathetic]", "[curious]"]
+    assert row["tts_tier"] == "emotive"
+    assert row["expression_decorated"] is True
+    # Emotion was extracted from the engine's thought_log_json.
+    assert row["user_emotion"] == "frustrated, defeated"

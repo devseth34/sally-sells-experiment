@@ -1,10 +1,11 @@
 import { useNavigate, useLocation } from "react-router-dom";
 
 const NAV_ITEMS = [
-  { path: "/", label: "Chat" },
-  { path: "/dashboard", label: "Dashboard" },
-  { path: "/history", label: "History" },
-  { path: "/admin", label: "Admin" },
+  { path: "/", label: "Chat", exact: true },
+  { path: "/voice", label: "Voice", exact: false },
+  { path: "/dashboard", label: "Dashboard", exact: false },
+  { path: "/history", label: "History", exact: false },
+  { path: "/admin", label: "Admin", exact: false },
 ];
 
 export function Header() {
@@ -19,7 +20,9 @@ export function Header() {
         </span>
         <nav className="flex items-center gap-1">
           {NAV_ITEMS.map((item) => {
-            const isActive = location.pathname === item.path;
+            const isActive = item.exact
+              ? location.pathname === item.path
+              : location.pathname.startsWith(item.path);
             return (
               <button
                 key={item.path}

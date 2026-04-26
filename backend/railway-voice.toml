@@ -1,0 +1,35 @@
+# Railway config for the VOICE API service (voice_main.py).
+# Deploy as a SECOND Railway service, separate from the chat backend
+# (which uses backend/railway.toml).
+#
+# When you create the new Railway service in the dashboard, point it at:
+#   - this repo (devseth34/sally-sells-experiment)
+#   - root directory: backend
+#   - config file: railway-voice.toml
+#   - branch: main
+#
+# Set these env vars on the service (Railway → Variables tab):
+#   DATABASE_URL          — same Neon URL as the chat service
+#   LIVEKIT_URL           — wss://...livekit.cloud
+#   LIVEKIT_API_KEY
+#   LIVEKIT_API_SECRET
+#   VOICE_PERSIST_TOKEN   — shared with the voice agent on Fly.io
+#   FRONTEND_URL          — https://<your-vercel-domain> (locks CORS)
+#   SKIP_SCHEMA_CHECK     — leave unset (false) on first deploy so voice
+#                            tables get created. Set to "true" afterwards.
+#
+# voice_main.py runs from backend/ as cwd. It imports voice_persistence_api
+# directly (not backend.voice_persistence_api) so this works without
+# PYTHONPATH gymnastics.
+
+[build]
+builder = "nixpacks"
+
+[build.nixpacks]
+providers = ["python"]
+
+[deploy]
+startCommand = "uvicorn voice_main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

@@ -3,6 +3,13 @@
 # Region iad (US-East) colocates with LiveKit Cloud's default region
 # per Addendum §B4. The agent is an outbound WebSocket client to
 # LiveKit, not an HTTP server, so http_service is disabled.
+#
+# IMPORTANT — deploy command:
+#   fly deploy --config backend/voice_agent/fly.toml \
+#              --dockerfile backend/voice_agent/Dockerfile \
+#              .
+# (Run from REPO ROOT, with `.` as the build context. The Dockerfile
+# expects to copy `backend/` so `backend.voice_agent.*` imports resolve.)
 
 app = "sally-voice-agent"
 primary_region = "iad"
@@ -14,7 +21,7 @@ primary_region = "iad"
   PYTHONUNBUFFERED = "1"
 
 [processes]
-  agent = "python -m voice_agent.agent"
+  agent = "python -m backend.voice_agent.sally start"
 
 [[vm]]
   size = "shared-cpu-1x"
@@ -29,12 +36,20 @@ primary_region = "iad"
   auto_start_machines = true
   min_machines_running = 1
 
-# TODO (Day 2+):
-#   - Confirm `shared-cpu-1x`/512mb holds up under 3 concurrent calls.
-#     Bump to performance-1x if ASR backpressure shows up.
-#   - Wire secrets via `fly secrets set` (do not inline API keys here):
-#       LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-#       DEEPGRAM_API_KEY, CARTESIA_API_KEY, ELEVENLABS_API_KEY,
-#       ANTHROPIC_API_KEY, GEMINI_API_KEY, DATABASE_URL,
-#       MAX_CONCURRENT_CALLS, DAILY_SPEND_CAP_USD, VOICE_CHANNEL_ENABLED.
-#   - Add healthcheck once agent.py exposes one.
+# Required secrets (set via `fly secrets set KEY=VALUE` from repo root):
+#   LIVEKIT_URL                 wss://...livekit.cloud
+#   LIVEKIT_API_KEY
+#   LIVEKIT_API_SECRET
+#   DEEPGRAM_API_KEY
+#   CARTESIA_API_KEY
+#   ELEVENLABS_API_KEY
+#   ANTHROPIC_API_KEY           used by tag_director (sally_emotive arm)
+#   GEMINI_API_KEY              used by Layer 1 (comprehension)
+#   DATABASE_URL                Neon URL — engine_adapter reads sessions
+#                               via the frozen app/database.py
+#   VOICE_PERSIST_URL           https://<railway-voice-api>/voice/persist
+#   VOICE_PERSIST_TOKEN         shared secret with the voice API service
+#
+# Optional:
+#   SALLY_FORCE_PERSONALITY     pin a single arm for smoke testing
+#   MAX_CONCURRENT_CALLS, DAILY_SPEND_CAP_USD, VOICE_CHANNEL_ENABLED

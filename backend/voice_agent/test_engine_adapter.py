@@ -157,3 +157,131 @@ async def test_arm_key_passed_through_to_engine() -> None:
         await adapter.turn("hi")
 
     assert seen_arm[0] == PERSONALITIES["sally_warm"]["engine_arm"]
+
+
+# ── Emotion plumbing (Phase E, for sally_emotive expression layer) ────
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_extracted_from_thought_log() -> None:
+    """When L1's emotional_tone is present under
+    thought_log["comprehension"]["emotional_tone"], the adapter must
+    surface it via `last_user_emotion`."""
+    import json
+    thought_log = json.dumps(
+        {"comprehension": {"emotional_tone": "engaged, frustrated, defensive"}}
+    )
+
+    def fake_process(**kwargs):
+        return _fake_result("Sounds tough.", thought_log_json=thought_log)
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("the workflow is killing me")
+
+    assert adapter.last_user_emotion == "engaged, frustrated, defensive"
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_handles_flat_thought_log() -> None:
+    """Some engine paths may serialize emotional_tone at the top level
+    of thought_log instead of nested under `comprehension`. Adapter
+    should handle both shapes."""
+    import json
+    thought_log = json.dumps({"emotional_tone": "excited"})
+
+    def fake_process(**kwargs):
+        return _fake_result("Great!", thought_log_json=thought_log)
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("yes!")
+
+    assert adapter.last_user_emotion == "excited"
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_none_when_thought_log_missing() -> None:
+    """Engine can omit thought_log_json entirely on fast-path or fallback
+    runs. Adapter must default to None, never crash."""
+    def fake_process(**kwargs):
+        # Pop the default thought_log_json to simulate engine not setting it
+        result = _fake_result("ok")
+        result.pop("thought_log_json", None)
+        return result
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("hi")
+
+    assert adapter.last_user_emotion is None
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_none_when_thought_log_malformed() -> None:
+    """Garbled JSON must not crash the turn. Defensive parse → None."""
+    def fake_process(**kwargs):
+        return _fake_result("ok", thought_log_json="not valid json {{{ ")
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("hi")
+
+    assert adapter.last_user_emotion is None
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_none_when_field_absent() -> None:
+    """Valid JSON without an emotional_tone field → None (not "")."""
+    import json
+    thought_log = json.dumps({"comprehension": {"intent": "agreement"}})
+
+    def fake_process(**kwargs):
+        return _fake_result("ok", thought_log_json=thought_log)
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("hi")
+
+    assert adapter.last_user_emotion is None
+
+
+@pytest.mark.asyncio
+async def test_user_emotion_resets_between_turns() -> None:
+    """A frustrated emotion on turn 1 must NOT bleed into turn 2 if
+    turn 2's thought_log lacks the field. No stale emotion leakage."""
+    import json
+    log_with = json.dumps({"comprehension": {"emotional_tone": "frustrated"}})
+    log_without = json.dumps({"comprehension": {}})
+
+    call = {"n": 0}
+
+    def fake_process(**kwargs):
+        call["n"] += 1
+        if call["n"] == 1:
+            return _fake_result("ok 1", thought_log_json=log_with)
+        return _fake_result("ok 2", thought_log_json=log_without)
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("hi")
+        assert adapter.last_user_emotion == "frustrated"
+        await adapter.turn("hi again")
+        assert adapter.last_user_emotion is None  # reset, not carried over
+
+
+@pytest.mark.asyncio
+async def test_last_turn_stats_includes_user_emotion() -> None:
+    """Phase F's metrics emission reads `last_turn_stats` for
+    observability fields. Make sure user_emotion is exposed there too."""
+    import json
+    thought_log = json.dumps({"comprehension": {"emotional_tone": "excited"}})
+
+    def fake_process(**kwargs):
+        return _fake_result("ok", thought_log_json=thought_log)
+
+    adapter = SallyEngineAdapter("sally_emotive")
+    with patch("backend.voice_agent.engine_adapter.SallyEngine.process_turn", side_effect=fake_process):
+        await adapter.turn("yes!")
+
+    assert adapter.last_turn_stats.get("user_emotion") == "excited"

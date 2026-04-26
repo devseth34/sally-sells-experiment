@@ -16,7 +16,7 @@ from backend.voice_agent.personalities import PERSONALITIES
 _ARMS = set(PERSONALITIES.keys())
 
 
-def test_returns_one_of_the_three_locked_personalities() -> None:
+def test_returns_one_of_the_locked_personalities() -> None:
     result = assign_personality()
     assert result in _ARMS
 
@@ -31,19 +31,25 @@ def test_seeded_rng_is_deterministic() -> None:
     assert seq_a == seq_b
 
 
-def test_uniform_distribution_over_3000_draws() -> None:
-    """All three arms should be reachable and roughly evenly distributed.
+def test_uniform_distribution_over_draws() -> None:
+    """All arms should be reachable and roughly evenly distributed.
 
-    3000 draws / 3 arms = 1000 expected each. A seeded uniform draw sits
-    easily within ±5% of that (±50 draws). Tighter bounds would cause
-    flakes; looser wouldn't catch a regression that, e.g., dropped one
-    arm entirely.
+    Uses 4000 draws so expected count per arm is 1000 regardless of arm
+    count. Tolerance ±10% (±100) is wide enough to avoid seed-sensitive
+    flakes while still catching a regression that drops an arm entirely.
     """
+    n_arms = len(_ARMS)
+    n_draws = n_arms * 1000
+    expected = n_draws // n_arms
+    tolerance = expected // 10  # ±10%
     rng = random.Random(1337)
-    counts = Counter(assign_personality(rng=rng) for _ in range(3000))
+    counts = Counter(assign_personality(rng=rng) for _ in range(n_draws))
     assert set(counts.keys()) == _ARMS, "every arm must be reachable"
     for arm, count in counts.items():
-        assert 950 <= count <= 1050, f"{arm} drew {count} times, expected 1000 ±50"
+        lo, hi = expected - tolerance, expected + tolerance
+        assert lo <= count <= hi, (
+            f"{arm} drew {count} times, expected {expected} ±{tolerance}"
+        )
 
 
 @pytest.mark.parametrize("stratum", [None, "cold", "warm", "hot", "unknown_future_value"])

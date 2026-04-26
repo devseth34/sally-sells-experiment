@@ -25,9 +25,15 @@ reportlab
 
 # --- Voice-specific ---
 livekit-agents
+livekit-api
 livekit-plugins-deepgram
 livekit-plugins-cartesia
 livekit-plugins-elevenlabs
 deepgram-sdk
 cartesia
 elevenlabs
+
+# Direct HTTP+SSE client for the custom Eleven v3 adapter.
+# livekit-plugins-elevenlabs forces WebSockets, which v3 doesn't support
+# (returns 403). See backend/voice_agent/elevenlabs_v3_tts.py for context.
+aiohttp

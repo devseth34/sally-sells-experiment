@@ -56,6 +56,8 @@ from backend.voice_agent.metrics import (  # noqa: E402
     default_sink,
     install_comprehension_capture,
 )
+from backend.voice_agent.live_reasoning import LiveReasoningPublisher  # noqa: E402
+from backend.voice_agent.persistence import SessionRecorder  # noqa: E402
 from backend.voice_agent.sally_voice_runner import SallyVoiceRunner  # noqa: E402
 from backend.voice_agent.stt import make_stt  # noqa: E402
 from backend.voice_agent.tts import make_tts  # noqa: E402
@@ -93,17 +95,56 @@ async def entrypoint(ctx: JobContext) -> None:
         extra={"room": ctx.room.name, "job_id": ctx.job.id},
     )
 
-    # Personality assignment — one draw per dispatch. Log the pick so
-    # CDS calibration (Day 5+) can reconstruct the assignment sequence
-    # from worker logs if the DB write layer is still WIP.
-    personality = assign_personality()
+    # Parse room metadata set by the frontend token endpoint.
+    # Provides forcedPersonality (dev arm picker) and the callId that
+    # links this LiveKit job to the voice_sessions DB row.
+    import json as _json
+    import os as _os
+
+    _forced_from_meta: str | None = None
+    _frontend_call_id: str | None = None
+    try:
+        if ctx.room.metadata:
+            _meta = _json.loads(ctx.room.metadata)
+            _forced_from_meta = _meta.get("forcedPersonality")
+            _frontend_call_id = _meta.get("callId")
+    except (ValueError, AttributeError):
+        pass
+
+    # SALLY_FORCE_PERSONALITY env var wins over room metadata (local dev).
+    _env_forced = _os.environ.get("SALLY_FORCE_PERSONALITY")
+    _forced_final = _env_forced or _forced_from_meta
+
+    from backend.voice_agent.personalities import PERSONALITIES as _PERS
+    personality = _forced_final if _forced_final in _PERS else assign_personality()
+
+    # Use the frontend's callId so persistence keys match what the browser
+    # has in its URL. Fall back to the LiveKit job.id if token was minted
+    # outside the voice tab (e.g., direct Playground access).
+    _call_id = _frontend_call_id or ctx.job.id
+
     logger.info(
         "Personality chosen for this call",
-        extra={"personality": personality, "job_id": ctx.job.id},
+        extra={
+            "personality": personality,
+            "job_id": ctx.job.id,
+            "call_id": _call_id,
+            "forced": bool(_forced_final),
+        },
     )
 
     stt = make_stt()
-    tts = make_tts(personality)
+    tts = make_tts(personality)  # always the fast (Flash/Sonic) tier
+    # Emotive tier (v3) — only built for sally_emotive. For all other
+    # arms this is None and the runner stays on the fast path, identical
+    # to pre-Phase-F behavior. Exception is swallowed: a broken v3 key
+    # or missing aiohttp install must not prevent the other 3 arms from
+    # working.
+    tts_emotive = None
+    try:
+        tts_emotive = make_tts(personality, tier="emotive")
+    except Exception:
+        logger.debug("Emotive TTS not available for %s (non-fatal)", personality)
     audio_source = rtc.AudioSource(_TTS_SAMPLE_RATE, _TTS_CHANNELS)
     agent_track = rtc.LocalAudioTrack.create_audio_track("sally-voice", audio_source)
 
@@ -123,16 +164,31 @@ async def entrypoint(ctx: JobContext) -> None:
     metrics_sink = default_sink()
     logger.info(
         "Metrics sink",
-        extra={"path": str(metrics_sink.path), "call_id": ctx.job.id},
+        extra={"path": str(metrics_sink.path), "call_id": _call_id},
     )
+
+    recorder = SessionRecorder(
+        call_id=_call_id,
+        arm=personality,
+        personality=personality,
+        forced=bool(_forced_final),
+    )
+
+    # Live reasoning publisher (Phase 2). Fire-and-forget broadcast of
+    # turn metadata to the participant's browser. Runs in parallel with
+    # the recorder; the DB write remains the source of truth.
+    publisher = LiveReasoningPublisher(ctx.room)
 
     runner = SallyVoiceRunner(
         personality=personality,
         tts=tts,
+        tts_emotive=tts_emotive,
         audio_source=audio_source,
         on_session_end=_on_session_end,
         metrics_sink=metrics_sink,
-        call_id=ctx.job.id,
+        call_id=_call_id,
+        recorder=recorder,
+        publisher=publisher,
     )
 
     async def _drive_stt_from_track(
@@ -304,12 +360,31 @@ async def entrypoint(ctx: JobContext) -> None:
     # so any early ASR final is dropped until the greeting finishes.
     await runner.open()
 
+    # Phase 2: announce the session to any subscribed browser. The greeting
+    # has finished by now, so the data channel is ready and the live panel
+    # has a participant to listen on. Best-effort — failures are swallowed.
+    try:
+        await publisher.publish_session(
+            call_id=_call_id,
+            arm=personality,
+            personality=personality,
+            forced=bool(_forced_final),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("publish_session failed (non-fatal)", exc_info=True)
+
     try:
         await shutdown_event.wait()
     finally:
         for task in list(stt_tasks):
             task.cancel()
         await audio_source.aclose()
+        # Flush session to DB. session_ended=True when the engine drove the
+        # end (ownership/commitment close); False when user disconnected.
+        try:
+            await recorder.flush(session_ended=runner._adapter.ended)
+        except Exception:  # noqa: BLE001
+            logger.exception("recorder.flush failed (non-fatal)")
 
 
 if __name__ == "__main__":

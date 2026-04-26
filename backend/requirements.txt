@@ -15,3 +15,7 @@ python-jose[cryptography]
 python-multipart
 twilio
 reportlab
+# Voice API (voice_main.py) — token minting for /voice/token endpoint.
+# Adding here so the same Railway deploy (or sibling service) can serve
+# both chat and voice without a second requirements file.
+livekit-api
